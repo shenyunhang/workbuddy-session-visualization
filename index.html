@@ -154,7 +154,9 @@
         <code id="defaultdir"></code> —— 点下面的按钮选中它即可。页面只走进
         <code>projects/</code> 和 <code>cache/conversation-product-spill/</code> 两个子目录，
         其余（整个目录常常有十几万个文件、好几个 GB）一概不碰。</div>
-      <div style="margin-top:8px"><button class="btn" id="dirbtn" type="button">打开并选择 WorkBuddy 目录</button></div>
+      <div style="margin-top:8px"><button class="btn" id="dirbtn" type="button">打开并选择 WorkBuddy 目录</button>
+        <a href="#" id="dircopy" class="tiny" style="margin-left:10px">复制可粘贴路径</a>
+        <a href="#" id="dirforget" class="tiny" style="display:none;margin-left:10px">重新选择目录</a></div>
       <input type="file" id="dirpick" webkitdirectory directory multiple hidden>
       <div class="tiny" id="dirhint" style="margin-top:6px"></div>
     </div>
@@ -297,7 +299,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793692487551,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793693736133,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1125,9 +1127,11 @@ function osInfo(){
   const plat = (nav.userAgentData && nav.userAgentData.platform) || '';
   const ua = nav.userAgent || '';
   const s = (plat + ' ' + ua).toLowerCase();
-  let os = '未知系统', dir = '~/.workbuddy', start = 'documents';
+  let os = '未知系统', dir = '~/.workbuddy', paste = '~/.workbuddy', start = 'documents';
   if(s.indexOf('windows') >= 0){
-    os = 'Windows'; dir = 'C:\\Users\\<你的用户名>\\.workbuddy';
+    // %USERPROFILE% is expanded by the native dialog, so it navigates in one
+    // paste without the page ever knowing the account name
+    os = 'Windows'; dir = 'C:\\Users\\<你的用户名>\\.workbuddy'; paste = '%USERPROFILE%\\.workbuddy';
   } else if(s.indexOf('mac') >= 0 || s.indexOf('darwin') >= 0){
     os = 'macOS'; dir = '/Users/<你的用户名>/.workbuddy';
   } else if(s.indexOf('android') >= 0){
@@ -1135,7 +1139,7 @@ function osInfo(){
   } else if(s.indexOf('linux') >= 0 || s.indexOf('x11') >= 0){
     os = 'Linux'; dir = '/home/<你的用户名>/.workbuddy';
   }
-  return {os: os, dir: dir, start: start};
+  return {os: os, dir: dir, paste: paste, start: start};
 }
 async function openPicker(){
   try {
@@ -1145,8 +1149,82 @@ async function openPicker(){
     return await window.showDirectoryPicker({id: 'wbviz', mode: 'read'});
   }
 }
-async function pickDir(){
+/* Reopening the same folder on every visit is the slow part. Chrome lets a
+   granted directory handle be stored in IndexedDB and reused after a click, so
+   the second visit skips the dialog entirely. Only the handle is persisted -
+   never the account name, which the handle would happily expose. */
+const IDB_KEY = 'wbroot';
+function idbOpen(){
+  return new Promise((res, rej)=>{
+    if(typeof indexedDB === 'undefined') return rej(new Error('no idb'));
+    let req;
+    try { req = indexedDB.open('wbviz', 1); } catch(e){ return rej(e); }
+    req.onupgradeneeded = ()=>{ req.result.createObjectStore('kv'); };
+    req.onsuccess = ()=> res(req.result);
+    req.onerror = ()=> rej(req.error || new Error('idb error'));
+  });
+}
+async function idbGet(k){
+  try {
+    const db = await idbOpen();
+    return await new Promise((res, rej)=>{
+      const t = db.transaction('kv', 'readonly');
+      const r = t.objectStore('kv').get(k);
+      r.onsuccess = ()=> res(r.result);
+      r.onerror = ()=> rej(r.error);
+    });
+  } catch(e){ return null; }
+}
+async function idbSet(k, v){
+  try {
+    const db = await idbOpen();
+    await new Promise((res, rej)=>{
+      const t = db.transaction('kv', 'readwrite');
+      t.objectStore('kv').put(v, k);
+      t.oncomplete = ()=> res(true);
+      t.onerror = ()=> rej(t.error);
+    });
+    return true;
+  } catch(e){ return false; }
+}
+async function rootPerm(h){
+  if(!h || !h.queryPermission) return 'none';
+  try { return await h.queryPermission({mode: 'read'}); } catch(e){ return 'none'; }
+}
+/* Accept ~/.workbuddy itself or any directory that contains it - picking
+   C:\Users\<name> is one level less clicking, and we step down from there. */
+async function resolveRoot(picked){
+  if(!picked || picked.name === '.workbuddy') return picked;
+  const inner = await subDir(picked, '.workbuddy');
+  if(inner && await subDir(inner, 'projects')) return inner;
+  return picked;
+}
+function rememberUI(h){
+  const btn = $('dirbtn'), fg = $('dirforget');
+  if(!btn) return;
+  if(h && window.showDirectoryPicker){
+    btn.textContent = '继续访问上次的 WorkBuddy 目录';
+    btn.dataset.cached = '1';
+    if(fg) fg.style.display = '';
+    if($('dirhint')) $('dirhint').textContent
+      = '浏览器已记住上次授权的目录，点一下直接进入；要换目录点「重新选择目录」。';
+  } else {
+    btn.textContent = '打开并选择 WorkBuddy 目录';
+    btn.dataset.cached = '';
+    if(fg) fg.style.display = 'none';
+  }
+}
+async function pickDir(opts){
   const st = $('filestatus');
+  let root = (opts && opts.useCached) ? await idbGet(IDB_KEY) : null;
+  if(root){
+    let perm = await rootPerm(root);
+    if(perm !== 'granted' && root.requestPermission){
+      try { perm = await root.requestPermission({mode: 'read'}); } catch(e){ perm = 'none'; }
+    }
+    if(perm !== 'granted') root = null;
+  }
+  if(!root){
   if(!window.showDirectoryPicker){
     // Firefox / Safari: fall back to the directory input, which does enumerate
     // everything, so warn first instead of looking broken
@@ -1155,14 +1233,16 @@ async function pickDir(){
     if($('dirpick').click) $('dirpick').click();
     return;
   }
-  st.textContent = '请在弹出的对话框里选中 ' + osInfo().dir + ' …';
-  let root;
+  st.textContent = '请在弹出的对话框里选中 ' + osInfo().dir
+    + '（也可以直接选你的用户目录，会自动进入 .workbuddy）…';
   try { root = await openPicker(); }
   catch(err){
     st.innerHTML = err && err.name === 'AbortError' ? '已取消选择'
       : '<span style="color:'+C.amber+'">目录选择器不可用：'+esc(err.message)
         +'。请改用 Chrome / Edge 打开本页。</span>';
     return;
+  }
+  root = await resolveRoot(root);
   }
   st.textContent = '已选中目录，正在定位 projects …';
   let got;
@@ -1175,6 +1255,10 @@ async function pickDir(){
     st.innerHTML = '<span style="color:'+C.amber+'">这个目录下没有 projects/*/*.jsonl，'
       +'请确认选中的是 ~/.workbuddy（或它的 projects 目录）。</span>';
     return;
+  }
+  if(window.showDirectoryPicker){
+    await idbSet(IDB_KEY, root);
+    rememberUI(await idbGet(IDB_KEY));
   }
   const files = [];
   for(const x of got.jsonl){
@@ -1507,7 +1591,23 @@ if($('apigo')){
   $('apiurl').value = API;
   $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
 }
-$('dirbtn').onclick = ()=>{ pickDir(); };
+$('dirbtn').onclick = ()=>{ pickDir({useCached: $('dirbtn').dataset.cached === '1'}); };
+$('dirforget').onclick = e=>{ e.preventDefault(); pickDir({useCached: false}); };
+/* the picker is the browser's own dialog and cannot be given a path, but the
+   dialog's address bar does accept one - so hand over a string to paste */
+$('dircopy').onclick = e=>{
+  e.preventDefault();
+  const p = osInfo().paste;
+  const done = ok=>{
+    $('dirhint').textContent = (ok ? '已复制 ' : '复制失败，请手动复制：') + p
+      + ' —— 在文件夹对话框的地址栏粘贴即可直达。';
+  };
+  const nav = (typeof navigator !== 'undefined' && navigator) || {};
+  if(nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(p).then(()=>done(true), ()=>done(false));
+  } else done(false);
+};
+idbGet(IDB_KEY).then(rememberUI);
 $('cancelbtn').onclick = ()=>{ ingestRun++; };
 try {
   const info = osInfo();

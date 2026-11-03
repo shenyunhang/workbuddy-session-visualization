@@ -14,6 +14,10 @@
 1. 用 **Chrome / Edge** 打开页面。页面会按 `navigator` 判断系统并直接显示默认目录
    （Windows `C:\Users\<你>\.workbuddy`、macOS `/Users/<你>/.workbuddy`、Linux `/home/<你>/.workbuddy`），
    点「**打开并选择 WorkBuddy 目录**」选中它即可。
+   - **更快的两条捷径**：点「复制可粘贴路径」拿到 `%USERPROFILE%\.workbuddy`（macOS/Linux 为 `~/.workbuddy`），
+     在文件夹对话框的地址栏粘贴即直达；也可以直接选中**你的用户目录**，页面会自动往下进 `.workbuddy`。
+   - 第二次访问时按钮会变成「**继续访问上次的 WorkBuddy 目录**」——浏览器记住了上次授权的目录句柄
+     （存在浏览器自己的 IndexedDB 里，只有句柄，不保存用户名），点一下无需再导航。
 2. 目录选择器只走进 `projects/` 和 `cache/conversation-product-spill/` 两个子目录 —— 整个
    `~/.workbuddy` 常常有十几万个文件、好几个 GB，全量枚举会让标签页在解析开始前就卡死。
 2. 页面在浏览器里完成全部解析：
