@@ -39,6 +39,25 @@ File API 完成，刷新页面即回到无数据状态。
 每个会话的完整事件流（直接渲染原始 JSON 记录，不做字段提取），
 以及「系统提示与工具」标签页里的 agent 指令、工具说明与全部提示模板。
 
+> 下面三张截图用的是**完全虚构的演示数据**（会话标题、工作目录、消息、工具调用全部是编的，
+> 路径形如 `C:/Users/demo/Projects/...`），只用来展示版面，不含任何真实会话内容。
+
+### 看板总览
+
+![看板总览](images/screenshot-board.png)
+
+### 单个会话的事件流
+
+点开任意一行，右侧面板给出该会话的元信息与按时间排列的原始 JSON 记录。
+
+![会话详情与事件流](images/screenshot-session.png)
+
+### 系统提示与工具
+
+从 `cache/conversation-product-spill/` 读到的产品配置：agent 指令、工具说明、提示模板。
+
+![系统提示与工具](images/screenshot-prompts.png)
+
 ## 浏览器模式与本地脚本的差异
 
 - `workbuddy.db` 不会被读取（SQLite 需要 WASM 引擎）。因此只存在于数据库里的字段
