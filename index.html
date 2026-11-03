@@ -120,6 +120,9 @@
   details{margin-top:12px}
   summary{cursor:pointer;font-size:12px;color:var(--txt3)}
   summary:hover{color:var(--txt2)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  .opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel2)}
 </style>
 </head>
 <body>
@@ -136,25 +139,43 @@
   </header>
 
   <div class="card" id="loadbox" style="display:none;margin-bottom:18px">
-    <h2>载入数据（不经过任何服务器）</h2>
-    <div class="sub">这个页面本身不含任何会话数据。请在你<b>自己的电脑</b>上用 <code>python scan.py</code> 生成
-      <code>data.json</code>，然后把文件拖进下面这个框 —— 浏览器用 FileReader 直接读取并解析，
-      数据不会离开你的机器，也不会被上传。</div>
-    <div class="drop" id="drop">
-      <div class="dz">把 <b>data.json</b> 拖到这里</div>
-      <div class="tiny"><button class="btn" id="filebtn" type="button">选择文件</button>
-        <input type="file" id="filepick" accept=".json,application/json" hidden></div>
-      <div class="tiny" id="filestatus" style="margin-top:8px"></div>
-    </div>
-    <div class="tiny" style="margin-top:8px">本机路径与系统用户名会自动脱敏显示为 <code>~</code>，截图分享也不会泄露。</div>
-    <details>
-      <summary>进阶：改为连接本机服务（需要一直开着终端，不推荐）</summary>
-      <div class="filters" style="margin-top:10px">
-        <input type="text" id="apiurl" placeholder="http://127.0.0.1:8777" style="min-width:300px">
-        <button class="btn" id="apigo">连接</button>
-        <span class="tiny" id="apistatus"></span>
+    <h2>载入数据 · 全部在你的浏览器里完成</h2>
+    <div class="sub">这个页面不含任何数据，也不连接任何服务：它只读取你<b>主动选中</b>的本地文件，
+      用浏览器自己解析并渲染 —— 没有一个字节会离开这台机器。</div>
+
+    <div class="two">
+      <div class="opt">
+        <div style="font-size:13px"><b>① 选中数据目录（推荐）</b></div>
+        <div class="tiny">选中 <code>~/.workbuddy</code> 这个目录本身，页面会自动找出
+          <code>projects/*/*.jsonl</code> 会话记录和 <code>cache/conversation-product-spill/</code>
+          里的系统提示快照。</div>
+        <div style="margin-top:8px"><button class="btn" id="dirbtn" type="button">选择 WorkBuddy 目录</button></div>
+        <input type="file" id="dirpick" webkitdirectory directory multiple hidden>
       </div>
-    </details>
+      <div class="opt">
+        <div style="font-size:13px"><b>② 直接拖进来</b></div>
+        <div class="tiny">把整个目录、一批 <code>.jsonl</code>、或以前生成的 <code>data.json</code>
+          拖到下面的框里，效果完全一样。</div>
+        <div style="margin-top:8px"><button class="btn" id="filebtn" type="button">选择文件</button></div>
+        <input type="file" id="filepick" multiple accept=".json,.jsonl,application/json" hidden>
+      </div>
+    </div>
+
+    <div class="drop" id="drop">
+      <div class="dz">把 <b>~/.workbuddy</b> 目录或 <b>.jsonl</b> 文件拖到这里</div>
+      <div class="tiny" id="filestatus" style="margin-top:6px"></div>
+    </div>
+
+    <div class="filters" style="margin-top:12px;margin-bottom:0">
+      <span class="tiny">最多解析</span>
+      <input type="text" id="maxfiles" value="200" style="min-width:70px">
+      <span class="tiny">个最新会话文件 · 每会话原始 JSON 预算</span>
+      <input type="text" id="rawbudget" value="20000" style="min-width:90px">
+      <span class="tiny">字符（0 = 不截断）</span>
+    </div>
+    <div class="tiny" style="margin-top:8px">本机路径与系统用户名会自动脱敏成 <code>~</code> / <code>&lt;user&gt;</code>。
+      <code>workbuddy.db</code> 不会被读取（SQLite 需要 WASM 引擎），所以只存在于数据库里的字段
+      （会话状态、思考级别、权限模式等）显示为「—」。</div>
   </div>
 
   <div class="tabs">
@@ -276,7 +297,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793683101565,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部拖入本机生成的 data.json","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793686214337,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -444,13 +465,15 @@ function renderMeta(){
     ['数据体积', fmtBytes(S.reduce((a,s)=>a+(s.bytes||0),0))],
   ];
   $('kpis').innerHTML = kpis.map(([k,v])=>'<div class="kpi"><div class="v">'+v+'</div><div class="k">'+k+'</div></div>').join('');
-  $('subtitle').textContent = (DATA.deploy ? '静态部署版 · 页面不含数据，请在上方载入本机生成的 data.json'
+  $('subtitle').textContent = (DATA.deploy ? '静态部署版 · 页面不含数据，请在上方选中 ~/.workbuddy 目录或拖入 .jsonl'
     : '生成于 '+fmtTime(DATA.generatedAt)+' · 数据根目录 '+(DATA.rootShown || DATA.root));
   const src = DATA.source || {};
   $('srcinfo').innerHTML = (src.indexedSessions ? ('索引会话 '+src.indexedSessions+' · 扫描文件 '+src.scanned+'/'+src.jsonlFiles)
     : (S.length ? ('已载入 '+S.length+' 个会话') : '尚未载入数据'))
-    + (src.dbOk ? '' : (DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>'));
-  $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。上下文使用率仅覆盖有用量记录的 '+ctxKnown+' 个会话。';
+    + (src.dbOk || src.browser || DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>');
+  $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。'
+    + (ctxKnown ? ('上下文使用率仅覆盖有用量记录的 '+ctxKnown+' 个会话。')
+       : '上下文使用率需要 workbuddy.db，浏览器模式不读取数据库。');
 }
 
 /* ---------- charts ---------- */
@@ -572,7 +595,8 @@ function openDrawer(id){
       html += '<div style="display:flex;flex-wrap:wrap;gap:6px">'
         + s.plugins.map(p=>'<span class="tag a">'+esc(p)+'</span>').join('')+'</div>';
     }
-    html += '<div class="tiny" style="margin:8px 0 18px">系统提示原文随请求体发送，不落盘本地；以上为决定其内容的可观测配置。</div>';
+    html += '<div class="tiny" style="margin:8px 0 18px">系统提示原文来自 ~/.workbuddy/cache/conversation-product-spill '
+      +'的产品配置快照，完整内容见「系统提示与工具」标签页；以上为决定其组装方式的可观测配置。</div>';
   }
 
   const kinds = s.typeCounts || [];
@@ -617,7 +641,7 @@ function openDrawer(id){
 const MASK_RULES = [];
 function buildMask(root){
   MASK_RULES.length = 0;
-  const m = String(root||'').match(/^(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|home|Documents and Settings)[\\/]{1,2}([^\\/]+)/i);
+  const m = String(root||'').match(/(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|home|Documents and Settings)[\\/]{1,2}([^\\/]+)/i);
   if(!m || m[1].length < 2) return;
   const u = m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   MASK_RULES.push([new RegExp('(?:[A-Za-z]:)?[\\\\/]{1,2}(?:Users|home|Documents and Settings)[\\\\/]{1,2}'+u, 'gi'), '~']);
@@ -631,6 +655,9 @@ function applyPrivacy(){
   S.forEach(s=>{
     if(s.file) s.file = maskPath(s.file);
     if(s.ws) s.ws = maskPath(s.ws);
+    if(s.cwd) s.cwd = maskPath(s.cwd);
+    if(s.title) s.title = maskPath(s.title);
+    if(s.prompt) s.prompt = maskPath(s.prompt);
     (s.events||[]).forEach(e=>{ if(e.raw) e.raw = maskPath(e.raw); });
   });
   if(P && P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
@@ -645,7 +672,10 @@ function applyPayload(d){
   DATA.source = d.source || {};
   DATA.serve = !!d.serve;
   DATA.deploy = false;
-  buildMask(DATA.root);
+  // browser ingestion has no root path of its own, so fall back to the first
+  // working directory seen in the records to learn what needs masking
+  const first = S.find(s => s.cwd) || S.find(s => s.file) || null;
+  buildMask(DATA.root || (first ? (first.cwd || first.file) : ''));
   applyPrivacy();
   renderAll();
 }
@@ -667,6 +697,301 @@ function readDataFile(f){
   };
   fr.onerror = ()=>{ st.innerHTML = '<span style="color:'+C.amber+'">读取文件失败</span>'; };
   fr.readAsText(f);
+}
+
+/* ---------- browser-side scanner: read ~/.workbuddy straight off disk ----------
+   Same reduction as scan.py, reimplemented here so nothing has to run on the
+   machine: no python, no server, no upload. Only these files are ever read:
+     projects/<workspace>/<session>.jsonl      conversation records
+     cache/conversation-product-spill/*.json   system prompt / agent / tool config
+   workbuddy.db is skipped on purpose - SQLite cannot be read without a WASM
+   engine, and every field the dashboard charts also exists in the JSONL. */
+const KIND_BY_TYPE_JS = {reasoning:'reasoning', function_call:'tool', function_call_result:'result',
+  'session-meta':'meta', 'ai-title':'title', 'file-history-snapshot':'snapshot',
+  'model-usage':'usage', 'credit-usage':'credit', 'resend-fork-notice':'fork'};
+const CORE_KINDS_JS = {user:1, assistant:1, system:1, reasoning:1, tool:1, result:1};
+const JS_MAX_EVENTS = 150, JS_MAX_AUX = 60, JS_RAW_ONE = 4000, JS_RAW_PREVIEW = 240;
+
+function jsToMs(v){
+  if(v == null) return null;
+  if(typeof v === 'number'){
+    if(v > 1e11) return Math.round(v);
+    if(v > 1e8) return Math.round(v * 1000);
+    return null;
+  }
+  if(typeof v === 'string'){
+    const s = v.trim();
+    if(/^\d+$/.test(s)) return jsToMs(Number(s));
+    const t = Date.parse(s);
+    return isNaN(t) ? null : t;
+  }
+  return null;
+}
+function jsSnippet(t, lim){
+  const s = String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  return s.length > lim ? s.slice(0, lim) + '…' : s;
+}
+function jsText(content){
+  if(typeof content === 'string') return content;
+  if(Array.isArray(content)){
+    const out = [];
+    for(const p of content){
+      if(typeof p === 'string') out.push(p);
+      else if(p && typeof p === 'object'){
+        if(typeof p.text === 'string') out.push(p.text);
+        else if(typeof p.content === 'string') out.push(p.content);
+      }
+    }
+    return out.join('\n');
+  }
+  return '';
+}
+function workspaceLabel(cwd){
+  if(!cwd) return '';
+  const p = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
+  return p.split('/').pop() || '';
+}
+function jsParse(text, id, wsFallback, size, budget){
+  const st = {turnsUser:0, turnsAssistant:0, toolCalls:0, toolErrors:0, reasoning:0,
+    toolCounter:{}, models:{}, firstTs:null, lastTs:null, firstPrompt:'', events:[], rawChars:0,
+    usage:{tokensIn:0, tokensOut:0, cacheRead:0, cacheWrite:0, credit:0, creditRecords:0,
+           creditFromUsage:0, requests:0},
+    sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
+    lines:0, badLines:0, title:'', cwd:''};
+
+  function rawEvent(kind, rec){
+    const str = JSON.stringify(rec);
+    const ev = {t: jsToMs(rec.timestamp), k: kind, size: str.length};
+    const want = Math.min(str.length, JS_RAW_ONE);
+    const room = budget - st.rawChars;
+    const take = want <= JS_RAW_PREVIEW ? want
+      : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
+    ev.raw = str.slice(0, take);
+    if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
+    if(take < str.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
+    return ev;
+  }
+  function addEvent(ev){
+    const kind = ev.k;
+    st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
+    if(CORE_KINDS_JS[kind]){
+      if(st.nCore >= JS_MAX_EVENTS) return;
+      st.nCore++;
+    } else {
+      if(st.nAux >= JS_MAX_AUX) return;
+      st.nAux++;
+    }
+    st.events.push(ev);
+  }
+
+  for(const raw of String(text).split(/\r?\n/)){
+    const line = raw.trim();
+    if(!line) continue;
+    st.lines++;
+    let rec;
+    try { rec = JSON.parse(line); } catch(e){ st.badLines++; continue; }
+    if(!rec || typeof rec !== 'object') continue;
+    const rtype = rec.type;
+    const ts = jsToMs(rec.timestamp);
+    if(ts){
+      if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
+      if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
+    }
+    const prov = (rec.providerData && typeof rec.providerData === 'object') ? rec.providerData : {};
+    const model = prov.requestModelName || prov.model;
+    if(model) st.models[String(model)] = (st.models[String(model)] || 0) + 1;
+    if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
+
+    if(rtype === 'session-meta'){
+      const meta = rec.meta || {};
+      for(const k of Object.keys(meta)){
+        if(k.indexOf('/') >= 0) st.sessionMeta[k.split('/').pop()] = meta[k];
+        else st.sessionMeta[k] = meta[k];
+      }
+    } else if(rtype === 'model-usage'){
+      const u = st.usage, ru = (prov.rawUsage && typeof prov.rawUsage === 'object') ? prov.rawUsage : {};
+      u.requests++;
+      const map = {tokensIn:'prompt_tokens', tokensOut:'completion_tokens',
+                   cacheRead:'cache_read_input_tokens', cacheWrite:'cache_creation_input_tokens'};
+      for(const dst of Object.keys(map)){
+        const val = ru[map[dst]];
+        if(typeof val === 'number') u[dst] += Math.round(val);
+      }
+      if(typeof ru.credit === 'number') u.creditFromUsage += ru.credit;
+    } else if(rtype === 'credit-usage'){
+      if(typeof prov.credit === 'number'){ st.usage.credit += prov.credit; st.usage.creditRecords++; }
+    } else if(rtype === 'message'){
+      const role = rec.role;
+      if(role === 'user'){
+        st.turnsUser++;
+        if(!st.firstPrompt) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
+      } else if(role === 'assistant') st.turnsAssistant++;
+      else if(role === 'system') st.systemMsgs++;
+    } else if(rtype === 'reasoning') st.reasoning++;
+    else if(rtype === 'function_call'){
+      st.toolCalls++;
+      const n = String(rec.name || 'unknown');
+      st.toolCounter[n] = (st.toolCounter[n] || 0) + 1;
+    } else if(rtype === 'function_call_result'){
+      const s = String(rec.status || '');
+      if(s && s !== 'completed' && s !== 'success' && s !== 'ok') st.toolErrors++;
+    } else if(rtype === 'file-history-snapshot') st.snapshots++;
+    else if(rtype === 'ai-title'){ if(rec.aiTitle) st.title = String(rec.aiTitle); }
+
+    const kind = rtype === 'message' ? String(rec.role || 'message') : KIND_BY_TYPE_JS[rtype];
+    if(kind) addEvent(rawEvent(kind, rec));
+  }
+
+  const kv = o => Object.keys(o).map(k => [k, o[k]]);
+  const models = kv(st.models).sort((a,b)=>b[1]-a[1]);
+  const created = st.firstTs, updated = st.lastTs;
+  return {
+    id: id,
+    title: st.title || st.firstPrompt || '(untitled)',
+    cwd: st.cwd,
+    ws: workspaceLabel(st.cwd) || wsFallback || '未知',
+    model: models.length ? models[0][0] : null,
+    runtimeModels: models.slice(0, 4),
+    status: '—',
+    thought: null,
+    config: {mode:null, interaction:null, welcome:null, permission:null, source:null, thought:null,
+      ctxWindow:null, runtime: st.sessionMeta.agentRuntime || null, host: st.sessionMeta.hostKind || null},
+    plugins: [],
+    usage: st.usage,
+    created: created, updated: updated,
+    duration: (created && updated) ? (updated - created) : null,
+    turnsUser: st.turnsUser, turnsAssistant: st.turnsAssistant,
+    toolCalls: st.toolCalls, toolErrors: st.toolErrors, reasoning: st.reasoning,
+    tools: kv(st.toolCounter).sort((a,b)=>b[1]-a[1]).slice(0, 12),
+    ctxUsed: null, ctxSize: null,
+    bytes: size || text.length, lines: st.lines, badLines: st.badLines,
+    prompt: st.firstPrompt,
+    events: st.events.filter(e => e.t).sort((a,b)=>a.t-b.t),
+    rawChars: st.rawChars,
+    typeCounts: kv(st.typeCounter).sort((a,b)=>b[1]-a[1]),
+    systemMsgs: st.systemMsgs, snapshots: st.snapshots,
+    file: (wsFallback ? wsFallback + '/' : '') + id + '.jsonl',
+  };
+}
+
+function jsProduct(cfg, label){
+  if(!cfg || typeof cfg !== 'object') return null;
+  const table = {};
+  (cfg.prompts || []).forEach(p => { if(p && p.name) table[String(p.name)] = p.template || ''; });
+  return {
+    ok: true, error: null,
+    meta: {file: label, commit: cfg.commit, commitMessage: cfg.commitMessage, date: cfg.date,
+      genieVersion: cfg.genieVersion, productName: cfg.productName || cfg.applicationName, snapshots: 1},
+    agents: (cfg.agents || []).filter(a=>a && typeof a==='object').map(a=>({
+      name: a.name, desc: a.description, instructions: a.instructions,
+      modelTags: a.modelTags || [], models: a.models || [], tools: a.tools || [],
+      prompt: table[a.instructions] || ''})),
+    tools: (cfg.tools || []).filter(t=>t && typeof t==='object').map(t=>({
+      name: t.name, key: t.description, prompt: table[t.description] || ''})),
+    prompts: Object.keys(table).map(k=>({name:k, len:table[k].length, text:table[k]}))
+      .sort((a,b)=>b.len-a.len),
+    subagents: (cfg.builtInSubagents || []).filter(s=>s && typeof s==='object'),
+    outputStyles: (cfg.outputStyles || []).filter(o=>o && typeof o==='object').map(o=>({
+      name: o.name, instructions: o.instructions, prompt: table[o.instructions] || ''})),
+    models: (cfg.models || []).map(m => typeof m === 'string'
+      ? {id:m, name:m} : {id:m && (m.id || m.name), name:m && (m.displayName || m.name)}),
+  };
+}
+
+function readText(f){
+  if(f && typeof f.text === 'function') return f.text();
+  return new Promise((res, rej)=>{
+    const fr = new FileReader();
+    fr.onload = ()=>res(String(fr.result));
+    fr.onerror = rej;
+    fr.readAsText(f);
+  });
+}
+function fileLabel(f){
+  const p = String(f && (f.webkitRelativePath || f.__wbPath || f.name) || '').replace(/\\/g, '/');
+  const parts = p.split('/').filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : '';
+}
+function walkEntry(entry, out){
+  return new Promise(res=>{
+    if(!entry) return res();
+    if(entry.isFile){
+      entry.file(f=>{
+        try { f.__wbPath = entry.fullPath; } catch(e){}
+        out.push(f); res();
+      }, ()=>res());
+      return;
+    }
+    if(!entry.isDirectory) return res();
+    const rd = entry.createReader();
+    const kids = [];
+    const step = ()=>rd.readEntries(list=>{
+      if(!list.length) return Promise.all(kids.map(k=>walkEntry(k, out))).then(()=>res(), ()=>res());
+      kids.push(...list); step();
+    }, ()=>res());
+    step();
+  });
+}
+async function filesFromDrop(dt){
+  const out = [];
+  if(dt && dt.items && dt.items.length && dt.items[0].webkitGetAsEntry){
+    const entries = [];
+    for(const it of dt.items){
+      const e = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if(e) entries.push(e);
+    }
+    for(const e of entries) await walkEntry(e, out);
+  }
+  if(!out.length && dt && dt.files) for(const f of dt.files) out.push(f);
+  return out;
+}
+
+async function ingestFiles(files){
+  const st = $('filestatus');
+  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '200', 10) || 200);
+  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '20000', 10));
+  const jsonl = [], prod = [], dump = [];
+  for(const f of files){
+    const p = String((f && (f.webkitRelativePath || f.__wbPath || f.name)) || '').replace(/\\/g, '/');
+    if(/\.jsonl$/i.test(p)) jsonl.push(f);
+    else if(/conversation-product-spill\/[^/]+\.json$/i.test(p)) prod.push(f);
+    else if(/(^|\/)data\.json$/i.test(p)) dump.push(f);
+  }
+  if(!jsonl.length){
+    if(dump.length){ st.textContent = '目录里没有 .jsonl，改为载入 data.json …'; readDataFile(dump[0]); return; }
+    st.innerHTML = '<span style="color:'+C.amber+'">没找到会话记录（projects/*/*.jsonl）。'
+      +'请直接选中 ~/.workbuddy 目录，或拖入 .jsonl 文件。</span>';
+    return;
+  }
+  jsonl.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
+  const use = jsonl.slice(0, max);
+  const sessions = [];
+  for(let i = 0; i < use.length; i++){
+    const f = use[i];
+    st.textContent = '正在解析 ' + (i + 1) + '/' + use.length + ' … ' + (f.name || '');
+    let txt = '';
+    try { txt = await readText(f); } catch(e){ continue; }
+    const name = String(f.name || '').replace(/\.jsonl$/i, '');
+    sessions.push(jsParse(txt, name, fileLabel(f), f.size || txt.length, budget));
+  }
+  let product = {ok:false, error:'未找到产品配置快照（cache/conversation-product-spill/*.json）',
+    meta:{}, agents:[], tools:[], prompts:[], subagents:[], outputStyles:[], models:[]};
+  if(prod.length){
+    prod.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
+    try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || product; }
+    catch(e){ product.error = '产品配置解析失败：' + e.message; }
+  }
+  st.textContent = '解析完成，正在渲染 …';
+  applyPayload({
+    generatedAt: Date.now(),
+    root: '',
+    source: {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db', indexedSessions:sessions.length,
+      workspaces:new Set(sessions.map(s=>s.ws)).size, jsonlFiles:jsonl.length, scanned:sessions.length},
+    sessions: sessions,
+    product: product,
+  });
+  st.innerHTML = '<span style="color:'+C.teal+'">已解析 '+sessions.length+' 个会话（目录内共 '
+    +jsonl.length+' 个记录文件）'+(product.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照')+'</span>';
 }
 
 /* ---------- remote data source (optional, only if you really want a local service) ---------- */
@@ -851,22 +1176,26 @@ function doConnect(){
         +'。确认本机已运行 scan.py --serve --allow-origin，且浏览器允许访问 localhost。</span>';
     });
 }
-/* the hosted page ships with no data: offer the file picker, and keep the
-   service option tucked away for anyone who really wants it */
-$('apigo').onclick = doConnect;
-$('apiurl').value = API;
-$('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
+/* the hosted page ships with no data: hand it files or a folder and let the
+   browser do the parsing */
+if($('apigo')){
+  $('apigo').onclick = doConnect;
+  $('apiurl').value = API;
+  $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
+}
+$('dirbtn').onclick = ()=>{ if($('dirpick').click) $('dirpick').click(); };
+$('dirpick').addEventListener('change', e=>{ ingestFiles(Array.from(e.target.files || [])); });
 $('filebtn').onclick = ()=>{ if($('filepick').click) $('filepick').click(); };
-$('filepick').addEventListener('change', e=>{ readDataFile(e.target.files && e.target.files[0]); });
+$('filepick').addEventListener('change', e=>{ ingestFiles(Array.from(e.target.files || [])); });
 ['dragenter','dragover'].forEach(t=>document.addEventListener(t, e=>{
   e.preventDefault(); const dz = $('drop'); if(dz) dz.classList.add('over'); }));
 ['dragleave','dragend'].forEach(t=>document.addEventListener(t, e=>{
   const dz = $('drop'); if(dz) dz.classList.remove('over'); }));
-document.addEventListener('drop', e=>{
+document.addEventListener('drop', async e=>{
   e.preventDefault();
   const dz = $('drop'); if(dz) dz.classList.remove('over');
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if(f) readDataFile(f);
+  const files = await filesFromDrop(e.dataTransfer);
+  if(files.length) ingestFiles(files);
 });
 const needData = DATA.deploy || DATA.serve || !S.length;
 $('loadbox').style.display = needData ? '' : 'none';
