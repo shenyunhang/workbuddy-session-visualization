@@ -299,7 +299,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793697208388,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793697934163,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -575,9 +575,12 @@ $('more').onclick = ()=>{ page++; renderList(false); };
 /* ---------- drawer ---------- */
 let cur = null;   // session currently shown in the drawer
 let hiddenKinds = new Set();   // event kinds filtered out of the drawer timeline
+const EV_STEP = 100;           // events rendered per page, and records pulled per re-parse
+let evShown = EV_STEP, evCurId = null;
 function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   cur = s;
+  if(evCurId !== id){ evShown = EV_STEP; evCurId = id; }
   $('d-title').innerHTML = esc(s.title)
     + (s.titleSrc === 'prompt'
       ? ' <span class="tag a" title="该文件里没有 ai-title 记录，标题取自首条提问">取首条提问</span>'
@@ -593,6 +596,8 @@ function openDrawer(id){
     ['思考片段', s.reasoning||0], ['上下文占用', pct==null?'—':(pct+'%（'+s.ctxUsed.toLocaleString()+' / '+s.ctxSize.toLocaleString()+'）')],
     ['记录行数 / 体积', (s.lines||0)+' 行 / '+fmtBytes(s.bytes||0)],
   ];
+  // context window size comes from the database, so show the request peak instead
+  if(pct == null && s.peakTokens) meta.push(['输入 token 峰值', s.peakTokens.toLocaleString()]);
   const u = s.usage || {};
   if(u.tokensIn || u.tokensOut || u.credit || u.creditFromUsage){
     meta.push(['输入 / 输出 token', (u.tokensIn||0).toLocaleString()+' / '+(u.tokensOut||0).toLocaleString()]);
@@ -628,8 +633,10 @@ function openDrawer(id){
   const kinds = s.typeCounts || [];
   const cutCount = (s.events||[]).filter(e=>e.cut).length;
   const evCount = (s.events||[]).length;
-  html += '<h2>事件流（'+evCount+' 条'
-    +(kinds.length?('，共 '+kinds.reduce((a,[,c])=>a+c,0)+' 条记录'):'')+'）</h2>';
+  const evAll = (s.events||[]);
+  const shown = Math.min(evCount, evShown);
+  html += '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
+    +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
   if(kinds.length){
     hiddenKinds = new Set();
     html += '<div class="kinds">'+kinds.map(([k,c])=>
@@ -642,7 +649,7 @@ function openDrawer(id){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += (s.events||[]).map((e,i)=>{
+  html += evAll.slice(0, shown).map((e,i)=>{
     const raw = e.raw || '';
     const tag = esc(KIND_LABEL[e.k] || e.k);
     const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
@@ -658,6 +665,22 @@ function openDrawer(id){
         : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>')
       +'</div></div>';
   }).join('') || '<div class="empty">该会话没有可展示的事件</div>';
+  // past the cap the records are still on disk: offer to render the next page,
+  // and to pull more out of the file when the parse stopped early
+  const rest = Math.max(0, (s.records || evCount) - evCount);
+  if(evCount > shown){
+    html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
+      +'显示更多事件（还有 '+(evCount - shown)+' 条）</button></div>';
+  }
+  if(rest > 0){
+    html += '<div style="margin-top:8px">'
+      + (s.__file
+        ? '<button class="btn" type="button" data-act="ev-parse">从文件再解析 '+EV_STEP+' 条记录（还有约 '
+          +rest+' 条）</button>'
+        : '<span class="tiny" style="color:'+C.amber+'">还有约 '+rest+' 条记录未解析：'
+          +'当前载入方式没有保留文件句柄，换成在页面上选中目录即可继续读取</span>')
+      +'</div>';
+  }
   html += '<div class="tiny" style="margin-top:16px">原始记录文件</div><div class="pathbox">'+esc(s.file)+'</div>';
   $('d-body').innerHTML = html;
 
@@ -804,7 +827,17 @@ function jsStat(){
     usage:{tokensIn:0, tokensOut:0, cacheRead:0, cacheWrite:0, credit:0, creditRecords:0,
            creditFromUsage:0, requests:0},
     sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
+    skipCore:0, skipAux:0, maxCore:JS_MAX_EVENTS, maxAux:JS_MAX_AUX, peakTokens:0,
     lines:0, badLines:0, title:'', titleTs:null, cwd:''};
+}
+/* resuming a parse: skip what is already on screen, then keep up to max more */
+function jsApplyOpts(st, opts){
+  if(!opts) return st;
+  if(opts.skipCore) st.skipCore = opts.skipCore;
+  if(opts.skipAux) st.skipAux = opts.skipAux;
+  if(opts.maxCore) st.maxCore = opts.maxCore;
+  if(opts.maxAux) st.maxAux = opts.maxAux;
+  return st;
 }
 
 /* 96% of the bytes live in four record types - tool calls, tool results, file
@@ -828,8 +861,11 @@ const NAME_CHARS = 12000;
 function jsEvent(st, kind, ts, line, budget){
   st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
   const core = !!CORE_KINDS_JS[kind];
-  if(core ? st.nCore >= JS_MAX_EVENTS : st.nAux >= JS_MAX_AUX) return;
+  const seen = core ? st.nCore : st.nAux;
   if(core) st.nCore++; else st.nAux++;
+  const skip = core ? st.skipCore : st.skipAux;
+  if(seen < skip) return;
+  if(seen - skip >= (core ? st.maxCore : st.maxAux)) return;
   // budget 0 = keep every record whole, including the per-record cap
   const take = budget === 0 ? line.length
     : (() => {
@@ -947,6 +983,11 @@ function jsRecord(st, line, budget){
   const model = prov.requestModelName || prov.model;
   if(model) st.models[String(model)] = (st.models[String(model)] || 0) + 1;
   if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
+  // context window size only exists in the database, but the request payload
+  // carries the prompt size, so keep the peak as a usable stand-in
+  const ru0 = (prov.rawUsage && typeof prov.rawUsage === 'object') ? prov.rawUsage : {};
+  if(typeof ru0.prompt_tokens === 'number' && ru0.prompt_tokens > st.peakTokens)
+    st.peakTokens = Math.round(ru0.prompt_tokens);
 
   if(rtype === 'session-meta'){
     const meta = rec.meta || {};
@@ -1020,8 +1061,9 @@ function jsFinish(st, id, wsFallback, size){
     turnsUser: st.turnsUser, turnsAssistant: st.turnsAssistant,
     toolCalls: st.toolCalls, toolErrors: st.toolErrors, reasoning: st.reasoning,
     tools: kv(st.toolCounter).sort((a,b)=>b[1]-a[1]).slice(0, 12),
-    ctxUsed: null, ctxSize: null,
+    ctxUsed: null, ctxSize: null, peakTokens: st.peakTokens || null,
     bytes: size || 0, lines: st.lines, badLines: st.badLines,
+    records: Object.keys(st.typeCounter).reduce((a,k)=>a+st.typeCounter[k], 0),
     prompt: st.firstPrompt,
     events: st.events.filter(e => e.t).sort((a,b)=>a.t-b.t),
     rawChars: st.rawChars,
@@ -1031,8 +1073,8 @@ function jsFinish(st, id, wsFallback, size){
   };
 }
 
-function jsParse(text, id, wsFallback, size, budget){
-  const st = jsStat();
+function jsParse(text, id, wsFallback, size, budget, opts){
+  const st = jsApplyOpts(jsStat(), opts);
   const lines = String(text).split(/\r?\n/);
   for(let i = 0; i < lines.length; i++) jsLine(st, lines[i], budget);
   return jsFinish(st, id, wsFallback, size);
@@ -1041,8 +1083,8 @@ function jsParse(text, id, wsFallback, size, budget){
 /* Same parse, but sliced: a single session file reaches tens of MB, and doing
    that in one synchronous pass froze the tab for seconds. Yielding between
    slices keeps the progress bar moving and the page responsive. */
-async function jsParseAsync(text, id, wsFallback, size, budget, onSlice){
-  const st = jsStat();
+async function jsParseAsync(text, id, wsFallback, size, budget, opts, onSlice){
+  const st = jsApplyOpts(jsStat(), opts);
   const lines = String(text).split(/\r?\n/);
   const SLICE = 15000;
   for(let i = 0; i < lines.length; i += SLICE){
@@ -1396,7 +1438,7 @@ async function ingestFiles(files){
     try { txt = await readText(f); } catch(e){ failed++; continue; }
     try {
       const name = String(f.name || '').replace(/\.jsonl$/i, '');
-      const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, budget,
+      const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, budget, null,
         (done, total)=>{
           // a single file can be tens of MB; show its own progress while it runs
           sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
@@ -1404,6 +1446,8 @@ async function ingestFiles(files){
         });
       sub = '';
       bytes += txt.length;
+      // keep the handle so the drawer can parse past the event cap on demand
+      try { s.__file = f; } catch(e){}
       if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
       if(maskReady) maskSession(s);
       S.push(s);
@@ -1492,6 +1536,10 @@ function foldHandler(rootEl){
       all.textContent = expand ? '收起全部' : '展开全部';
       return;
     }
+    const evMore = ev.target.closest('[data-act="ev-more"]');
+    if(evMore && cur){ evShown += EV_STEP; openDrawer(cur.id); return; }
+    const evParse = ev.target.closest('[data-act="ev-parse"]');
+    if(evParse && cur){ parseMoreEvents(evParse); return; }
     const hit = ev.target.closest('.raw, .more');
     if(hit && cur){
       const row = hit.closest('.ev'); if(!row) return;
@@ -1521,6 +1569,36 @@ function foldHandler(rootEl){
 }
 $('d-body').onclick = foldHandler($('d-body'));
 function closeDrawer(){ $('drawer').classList.remove('on'); $('mask').classList.remove('on'); }
+
+/* The first pass stops at JS_MAX_EVENTS so a 23k-record session does not blow
+   up memory. The rest is still on disk, so re-read the file and resume the
+   parse where it stopped, skipping what is already on screen. */
+async function parseMoreEvents(btn){
+  const s = cur;
+  if(!s || !s.__file) return;
+  btn.disabled = true; btn.textContent = '正在从文件解析…';
+  let txt = null;
+  try { txt = await readText(s.__file); }
+  catch(err){ btn.textContent = '读取失败：' + err.message; return; }
+  let core = 0, aux = 0;
+  (s.events||[]).forEach(e=>{ if(CORE_KINDS_JS[e.k]) core++; else aux++; });
+  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+  let d = null;
+  try {
+    d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
+      {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
+  } catch(err){ btn.textContent = '解析失败：' + err.message; return; }
+  const seen = new Set((s.events||[]).map(e=>e.t+'|'+e.k+'|'+e.size));
+  let added = 0;
+  for(const e of (d.events||[])){
+    const key = e.t+'|'+e.k+'|'+e.size;
+    if(!seen.has(key)){ s.events.push(e); seen.add(key); added++; }
+  }
+  s.events.sort((a,b)=>a.t-b.t);
+  if(d.records) s.records = Math.max(s.records||0, d.records);
+  evShown += Math.max(EV_STEP, added);
+  openDrawer(s.id);
+}
 $('mask').onclick = closeDrawer;
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
 $('rows').addEventListener('click', e=>{
