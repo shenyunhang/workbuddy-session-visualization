@@ -176,10 +176,12 @@
 
     <div class="filters" style="margin-top:12px;margin-bottom:0">
       <span class="tiny">最多解析</span>
-      <input type="text" id="maxfiles" value="60" style="min-width:70px">
+      <input type="text" id="maxfiles" value="40" style="min-width:70px">
       <span class="tiny">个最新会话文件 · 每会话原始 JSON 预算</span>
       <input type="text" id="rawbudget" value="20000" style="min-width:90px">
-      <span class="tiny">字符（0 = 不截断）</span>
+      <span class="tiny">字符（0 = 不截断）· 最多读取</span>
+      <input type="text" id="mbcap" value="80" style="min-width:70px">
+      <span class="tiny">MB</span>
     </div>
     <div class="tiny" style="margin-top:8px">本机路径与系统用户名会自动脱敏成 <code>~</code> / <code>&lt;user&gt;</code>。
       <code>workbuddy.db</code> 不会被读取（SQLite 需要 WASM 引擎），所以只存在于数据库里的字段
@@ -305,7 +307,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793687367246,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793689213569,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -646,18 +648,27 @@ function openDrawer(id){
 }
 
 /* ---------- privacy: strip the local home path / account name from everything shown ---------- */
-const MASK_RULES = [];
+const MASK_RULES = [];      // kept as [regex, replacement] for callers that inspect it
+let MASK_RE = null, MASK_USER = '';
 function buildMask(root){
-  MASK_RULES.length = 0;
+  MASK_RULES.length = 0; MASK_RE = null; MASK_USER = '';
   const m = String(root||'').match(/(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|home|Documents and Settings)[\\/]{1,2}([^\\/]+)/i);
   if(!m || m[1].length < 2) return;
+  MASK_USER = m[1];
   const u = m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  MASK_RULES.push([new RegExp('(?:[A-Za-z]:)?[\\\\/]{1,2}(?:Users|home|Documents and Settings)[\\\\/]{1,2}'+u, 'gi'), '~']);
-  MASK_RULES.push([new RegExp('(?:Users|home|Documents and Settings)[-_.]'+u, 'gi'), '~']);
-  if(u.length >= 4) MASK_RULES.push([new RegExp(u, 'g'), '<user>']);
+  const home = '(?:Users|home|Documents and Settings)';
+  // one pass instead of three: every raw record gets scanned, so this is hot
+  const alts = ['(?:[A-Za-z]:)?[\\\\/]{1,2}' + home + '[\\\\/]{1,2}' + u, home + '[-_.]' + u];
+  if(u.length >= 4) alts.push(u);
+  MASK_RE = new RegExp(alts.join('|'), 'gi');
+  MASK_RULES.push([MASK_RE, '~']);
 }
-const maskPath = s => { let v = String(s==null?'':s);
-  for(const [re, rp] of MASK_RULES) v = v.replace(re, rp); return v; };
+const maskPath = s => {
+  const v = String(s==null?'':s);
+  if(!MASK_RE) return v;
+  const lower = MASK_USER.toLowerCase();
+  return v.replace(MASK_RE, m => (m.toLowerCase() === lower ? '<user>' : '~'));
+};
 function maskSession(s){
   if(s.file) s.file = maskPath(s.file);
   if(s.ws) s.ws = maskPath(s.ws);
@@ -760,97 +771,193 @@ function workspaceLabel(cwd){
   const p = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
   return p.split('/').pop() || '';
 }
-function jsParse(text, id, wsFallback, size, budget){
-  const st = {turnsUser:0, turnsAssistant:0, toolCalls:0, toolErrors:0, reasoning:0,
+function jsStat(){
+  return {turnsUser:0, turnsAssistant:0, toolCalls:0, toolErrors:0, reasoning:0,
     toolCounter:{}, models:{}, firstTs:null, lastTs:null, firstPrompt:'', events:[], rawChars:0,
     usage:{tokensIn:0, tokensOut:0, cacheRead:0, cacheWrite:0, credit:0, creditRecords:0,
            creditFromUsage:0, requests:0},
     sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
     lines:0, badLines:0, title:'', cwd:''};
+}
 
-  function rawEvent(kind, rec){
-    const str = JSON.stringify(rec);
-    const ev = {t: jsToMs(rec.timestamp), k: kind, size: str.length};
-    const want = Math.min(str.length, JS_RAW_ONE);
-    const room = budget - st.rawChars;
-    const take = want <= JS_RAW_PREVIEW ? want
-      : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
-    ev.raw = str.slice(0, take);
-    if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
-    if(take < str.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
-    return ev;
+/* 96% of the bytes live in four record types - tool calls, tool results, file
+   snapshots and thinking - and the dashboard needs one field from each. Those
+   are read straight off the raw text with a regex over the first 1.5 KB,
+   instead of building a full object graph just to throw it away. Anything that
+   does not match that shape falls back to JSON.parse. */
+const RE_J = {
+  type:   /(^|[^\\])"type"\s*:\s*"([^"]+)"/,
+  ts:     /(^|[^\\])"timestamp"\s*:\s*(-?\d+)/,
+  role:   /(^|[^\\])"role"\s*:\s*"([^"]+)"/,
+  status: /(^|[^\\])"status"\s*:\s*"([^"]*)"/,
+  name:   /(^|[^\\])"name"\s*:\s*"([^"]*)"/,
+  modelA: /(^|[^\\])"requestModelName"\s*:\s*"([^"]*)"/,
+  modelB: /(^|[^\\])"model"\s*:\s*"([^"]*)"/,
+  cwd:    /(^|[^\\])"cwd"\s*:\s*"([^"]*)"/,
+};
+const HEAD_CHARS = 1500;
+const NAME_CHARS = 12000;
+
+function jsEvent(st, kind, ts, line, budget){
+  st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
+  const core = !!CORE_KINDS_JS[kind];
+  if(core ? st.nCore >= JS_MAX_EVENTS : st.nAux >= JS_MAX_AUX) return;
+  if(core) st.nCore++; else st.nAux++;
+  const want = Math.min(line.length, JS_RAW_ONE);
+  const room = budget - st.rawChars;
+  const take = want <= JS_RAW_PREVIEW ? want
+    : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
+  const ev = {t: ts, k: kind, size: line.length, raw: line.slice(0, take)};
+  if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
+  if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
+  st.events.push(ev);
+}
+
+function jsLine(st, raw, budget){
+  const line = raw.trim();
+  if(!line) return;
+  st.lines++;
+  const head = line.length > HEAD_CHARS ? line.slice(0, HEAD_CHARS) : line;
+  const tm = RE_J.type.exec(head);
+  if(!tm){ jsRecord(st, line, budget); return; }
+  const rtype = tm[2];
+  const tsm = RE_J.ts.exec(head);
+  const ts = tsm ? jsToMs(+tsm[2]) : null;
+  if(!st.cwd){
+    // only scanned until the first hit, so this costs nothing once set
+    const cm = RE_J.cwd.exec(line.length > 8000 ? line.slice(0, 8000) : line);
+    if(cm) st.cwd = cm[2].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
   }
-  function addEvent(ev){
-    const kind = ev.k;
-    st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
-    if(CORE_KINDS_JS[kind]){
-      if(st.nCore >= JS_MAX_EVENTS) return;
-      st.nCore++;
-    } else {
-      if(st.nAux >= JS_MAX_AUX) return;
-      st.nAux++;
+  if(ts){
+    if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
+    if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
+  }
+  if(rtype === 'file-history-snapshot'){
+    jsModel(st, head);
+    st.snapshots++;
+    jsEvent(st, 'snapshot', ts, line, budget);
+    return;
+  }
+  if(rtype === 'reasoning'){
+    jsModel(st, head);
+    st.reasoning++;
+    jsEvent(st, 'reasoning', ts, line, budget);
+    return;
+  }
+  if(rtype === 'function_call_result'){
+    jsModel(st, head);
+    const sm = RE_J.status.exec(head);
+    const s = sm ? sm[2] : '';
+    if(s && s !== 'completed' && s !== 'success' && s !== 'ok') st.toolErrors++;
+    jsEvent(st, 'result', ts, line, budget);
+    return;
+  }
+  if(rtype === 'function_call'){
+    jsModel(st, head);
+    // the tool name sits after providerData, which can be huge; the regex stops
+    // at the first unescaped "name": so it never has to walk the whole record
+    const nm = RE_J.name.exec(line);
+    let name = nm ? nm[2] : null;
+    if(!name){
+      const rec = jsParseLine(line, st);
+      name = rec ? rec.name : null;
+      if(name) name = String(name);
     }
-    st.events.push(ev);
+    st.toolCalls++;
+    const n = String(name || 'unknown');
+    st.toolCounter[n] = (st.toolCounter[n] || 0) + 1;
+    jsEvent(st, 'tool', ts, line, budget);
+    return;
   }
+  if(rtype === 'message'){
+    const rm = RE_J.role.exec(head);
+    const role = rm ? rm[2] : '';
+    if(role === 'user'){
+      st.turnsUser++;
+      if(!st.firstPrompt){
+        const rec = jsParseLine(line, st);
+        if(rec) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
+      }
+    } else if(role === 'assistant') st.turnsAssistant++;
+    else if(role === 'system') st.systemMsgs++;
+    jsEvent(st, role || 'message', ts, line, budget);
+    return;
+  }
+  jsRecord(st, line, budget);
+}
 
-  for(const raw of String(text).split(/\r?\n/)){
-    const line = raw.trim();
-    if(!line) continue;
-    st.lines++;
-    let rec;
-    try { rec = JSON.parse(line); } catch(e){ st.badLines++; continue; }
-    if(!rec || typeof rec !== 'object') continue;
-    const rtype = rec.type;
-    const ts = jsToMs(rec.timestamp);
-    if(ts){
-      if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
-      if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
+function jsModel(st, head){
+  const mm = RE_J.modelA.exec(head) || RE_J.modelB.exec(head);
+  if(mm && mm[2]) st.models[mm[2]] = (st.models[mm[2]] || 0) + 1;
+}
+
+function jsParseLine(line, st){
+  try {
+    const rec = JSON.parse(line);
+    return (rec && typeof rec === 'object') ? rec : null;
+  } catch(e){
+    if(st) st.badLines++;
+    return null;
+  }
+}
+
+/* The small-but-varied records (session-meta, model-usage, credit-usage,
+   ai-title, fork notices) plus anything the fast path could not classify. */
+function jsRecord(st, line, budget){
+  const rec = jsParseLine(line, st);
+  if(!rec) return;
+  const rtype = rec.type;
+  const ts = jsToMs(rec.timestamp);
+  if(ts){
+    if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
+    if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
+  }
+  const prov = (rec.providerData && typeof rec.providerData === 'object') ? rec.providerData : {};
+  const model = prov.requestModelName || prov.model;
+  if(model) st.models[String(model)] = (st.models[String(model)] || 0) + 1;
+  if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
+
+  if(rtype === 'session-meta'){
+    const meta = rec.meta || {};
+    for(const k of Object.keys(meta)){
+      if(k.indexOf('/') >= 0) st.sessionMeta[k.split('/').pop()] = meta[k];
+      else st.sessionMeta[k] = meta[k];
     }
-    const prov = (rec.providerData && typeof rec.providerData === 'object') ? rec.providerData : {};
-    const model = prov.requestModelName || prov.model;
-    if(model) st.models[String(model)] = (st.models[String(model)] || 0) + 1;
-    if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
+  } else if(rtype === 'model-usage'){
+    const u = st.usage, ru = (prov.rawUsage && typeof prov.rawUsage === 'object') ? prov.rawUsage : {};
+    u.requests++;
+    const map = {tokensIn:'prompt_tokens', tokensOut:'completion_tokens',
+                 cacheRead:'cache_read_input_tokens', cacheWrite:'cache_creation_input_tokens'};
+    for(const dst of Object.keys(map)){
+      const val = ru[map[dst]];
+      if(typeof val === 'number') u[dst] += Math.round(val);
+    }
+    if(typeof ru.credit === 'number') u.creditFromUsage += ru.credit;
+  } else if(rtype === 'credit-usage'){
+    if(typeof prov.credit === 'number'){ st.usage.credit += prov.credit; st.usage.creditRecords++; }
+  } else if(rtype === 'message'){
+    const role = rec.role;
+    if(role === 'user'){
+      st.turnsUser++;
+      if(!st.firstPrompt) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
+    } else if(role === 'assistant') st.turnsAssistant++;
+    else if(role === 'system') st.systemMsgs++;
+  } else if(rtype === 'reasoning') st.reasoning++;
+  else if(rtype === 'function_call'){
+    st.toolCalls++;
+    const n = String(rec.name || 'unknown');
+    st.toolCounter[n] = (st.toolCounter[n] || 0) + 1;
+  } else if(rtype === 'function_call_result'){
+    const s = String(rec.status || '');
+    if(s && s !== 'completed' && s !== 'success' && s !== 'ok') st.toolErrors++;
+  } else if(rtype === 'file-history-snapshot') st.snapshots++;
+  else if(rtype === 'ai-title'){ if(rec.aiTitle) st.title = String(rec.aiTitle); }
 
-    if(rtype === 'session-meta'){
-      const meta = rec.meta || {};
-      for(const k of Object.keys(meta)){
-        if(k.indexOf('/') >= 0) st.sessionMeta[k.split('/').pop()] = meta[k];
-        else st.sessionMeta[k] = meta[k];
-      }
-    } else if(rtype === 'model-usage'){
-      const u = st.usage, ru = (prov.rawUsage && typeof prov.rawUsage === 'object') ? prov.rawUsage : {};
-      u.requests++;
-      const map = {tokensIn:'prompt_tokens', tokensOut:'completion_tokens',
-                   cacheRead:'cache_read_input_tokens', cacheWrite:'cache_creation_input_tokens'};
-      for(const dst of Object.keys(map)){
-        const val = ru[map[dst]];
-        if(typeof val === 'number') u[dst] += Math.round(val);
-      }
-      if(typeof ru.credit === 'number') u.creditFromUsage += ru.credit;
-    } else if(rtype === 'credit-usage'){
-      if(typeof prov.credit === 'number'){ st.usage.credit += prov.credit; st.usage.creditRecords++; }
-    } else if(rtype === 'message'){
-      const role = rec.role;
-      if(role === 'user'){
-        st.turnsUser++;
-        if(!st.firstPrompt) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
-      } else if(role === 'assistant') st.turnsAssistant++;
-      else if(role === 'system') st.systemMsgs++;
-    } else if(rtype === 'reasoning') st.reasoning++;
-    else if(rtype === 'function_call'){
-      st.toolCalls++;
-      const n = String(rec.name || 'unknown');
-      st.toolCounter[n] = (st.toolCounter[n] || 0) + 1;
-    } else if(rtype === 'function_call_result'){
-      const s = String(rec.status || '');
-      if(s && s !== 'completed' && s !== 'success' && s !== 'ok') st.toolErrors++;
-    } else if(rtype === 'file-history-snapshot') st.snapshots++;
-    else if(rtype === 'ai-title'){ if(rec.aiTitle) st.title = String(rec.aiTitle); }
+  const kind = rtype === 'message' ? String(rec.role || 'message') : KIND_BY_TYPE_JS[rtype];
+  if(kind) jsEvent(st, kind, ts, line, budget);
+}
 
-    const kind = rtype === 'message' ? String(rec.role || 'message') : KIND_BY_TYPE_JS[rtype];
-    if(kind) addEvent(rawEvent(kind, rec));
-  }
-
+function jsFinish(st, id, wsFallback, size){
   const kv = o => Object.keys(o).map(k => [k, o[k]]);
   const models = kv(st.models).sort((a,b)=>b[1]-a[1]);
   const created = st.firstTs, updated = st.lastTs;
@@ -873,7 +980,7 @@ function jsParse(text, id, wsFallback, size, budget){
     toolCalls: st.toolCalls, toolErrors: st.toolErrors, reasoning: st.reasoning,
     tools: kv(st.toolCounter).sort((a,b)=>b[1]-a[1]).slice(0, 12),
     ctxUsed: null, ctxSize: null,
-    bytes: size || text.length, lines: st.lines, badLines: st.badLines,
+    bytes: size || 0, lines: st.lines, badLines: st.badLines,
     prompt: st.firstPrompt,
     events: st.events.filter(e => e.t).sort((a,b)=>a.t-b.t),
     rawChars: st.rawChars,
@@ -881,6 +988,29 @@ function jsParse(text, id, wsFallback, size, budget){
     systemMsgs: st.systemMsgs, snapshots: st.snapshots,
     file: (wsFallback ? wsFallback + '/' : '') + id + '.jsonl',
   };
+}
+
+function jsParse(text, id, wsFallback, size, budget){
+  const st = jsStat();
+  const lines = String(text).split(/\r?\n/);
+  for(let i = 0; i < lines.length; i++) jsLine(st, lines[i], budget);
+  return jsFinish(st, id, wsFallback, size);
+}
+
+/* Same parse, but sliced: a single session file reaches tens of MB, and doing
+   that in one synchronous pass froze the tab for seconds. Yielding between
+   slices keeps the progress bar moving and the page responsive. */
+async function jsParseAsync(text, id, wsFallback, size, budget, onSlice){
+  const st = jsStat();
+  const lines = String(text).split(/\r?\n/);
+  const SLICE = 15000;
+  for(let i = 0; i < lines.length; i += SLICE){
+    const end = Math.min(lines.length, i + SLICE);
+    for(let j = i; j < end; j++) jsLine(st, lines[j], budget);
+    if(onSlice) onSlice(end, lines.length);
+    if(end < lines.length) await new Promise(r => setTimeout(r, 0));
+  }
+  return jsFinish(st, id, wsFallback, size);
 }
 
 function jsProduct(cfg, label){
@@ -958,7 +1088,7 @@ async function filesFromDrop(dt){
 /* Session files are large - a full history easily runs to hundreds of MB - so
    the scan is incremental: every batch is rendered straight away, the progress
    bar moves, and it can be stopped midway without losing what already parsed. */
-const BYTE_CAP = 400 * 1024 * 1024;   // stop reading rather than exhaust the tab
+const byteCap = ()=> Math.max(1, parseFloat(($('mbcap') && $('mbcap').value) || '150') || 150) * 1048576;
 let ingestRun = 0;
 function startIngest(fileList){
   const files = Array.from(fileList || []);
@@ -1003,7 +1133,7 @@ async function ingestFiles(files){
   DATA.serve = false; DATA.deploy = false;
   DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
     indexedSessions:0, workspaces:0, jsonlFiles:jsonl.length, scanned:0};
-  let maskReady = false, bytes = 0, failed = 0, skipped = 0;
+  let maskReady = false, bytes = 0, failed = 0, skipped = 0, sub = '';
   st.innerHTML = '找到 ' + jsonl.length + ' 个会话文件，开始解析最新的 ' + use.length + ' 个 …';
   $('prog').style.display = ''; $('progtxt').style.display = ''; $('cancelbtn').style.display = '';
   $('progbar').style.width = '0%';
@@ -1011,36 +1141,42 @@ async function ingestFiles(files){
     const pct = Math.round(done / use.length * 100);
     $('progbar').style.width = pct + '%';
     $('progtxt').textContent = '已解析 ' + S.length + ' / ' + use.length + ' 个会话 · '
-      + pct + '% · ' + (bytes / 1048576).toFixed(1) + ' MB'
+      + pct + '% · ' + (bytes / 1048576).toFixed(1) + ' MB' + sub
       + (failed ? ' · ' + failed + ' 个失败' : '') + (skipped ? ' · ' + skipped + ' 个跳过' : '');
   };
   tick(0);
   renderAll();
 
-  let lastPaint = 0;
-  for(let i = 0; i < use.length; i += 3){
+  let lastPaint = 0, lastFull = 0;
+  for(let i = 0; i < use.length; i++){
     if(run !== ingestRun) break;
-    const batch = use.slice(i, i + 3);
-    for(const f of batch){
-      if(bytes > BYTE_CAP){ skipped++; continue; }
-      let txt = null;
-      try { txt = await readText(f); } catch(e){ failed++; continue; }
-      try {
-        const name = String(f.name || '').replace(/\.jsonl$/i, '');
-        const s = jsParse(txt, name, fileLabel(f), f.size || txt.length, budget);
-        bytes += txt.length;
-        if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
-        if(maskReady) maskSession(s);
-        S.push(s);
-      } catch(e){ failed++; }
-    }
+    const f = use[i];
+    if(bytes > byteCap()){ skipped++; continue; }
+    let txt = null;
+    try { txt = await readText(f); } catch(e){ failed++; continue; }
+    try {
+      const name = String(f.name || '').replace(/\.jsonl$/i, '');
+      const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, budget,
+        (done, total)=>{
+          // a single file can be tens of MB; show its own progress while it runs
+          sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
+          tick(i);
+        });
+      sub = '';
+      bytes += txt.length;
+      if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
+      if(maskReady) maskSession(s);
+      S.push(s);
+    } catch(e){ failed++; }
     DATA.source.indexedSessions = S.length;
     DATA.source.scanned = S.length;
     DATA.source.workspaces = new Set(S.map(s=>s.ws)).size;
-    tick(Math.min(i + 3, use.length));
-    // repaint at most a few times a second, but never leave a batch unseen
+    tick(i + 1);
+    // the table and KPIs are cheap, the six charts are not: repaint those often,
+    // redraw the charts only about once a second
     const now = Date.now();
-    if(i + 3 >= use.length || now - lastPaint > 250){ lastPaint = now; renderAll(); }
+    if(now - lastPaint > 120){ lastPaint = now; compute(); renderMeta(); renderList(true); }
+    if(i === use.length - 1 || now - lastFull > 900){ lastFull = now; renderAll(); }
   }
 
   let product = P;
