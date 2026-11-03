@@ -168,7 +168,7 @@
       <span class="tiny">最多解析</span>
       <input type="text" id="maxfiles" value="100" style="min-width:70px">
       <span class="tiny">个最新会话文件 · 每会话原始 JSON 预算</span>
-      <input type="text" id="rawbudget" value="20000" style="min-width:90px">
+      <input type="text" id="rawbudget" value="0" style="min-width:90px">
       <span class="tiny">字符（0 = 不截断）· 最多读取</span>
       <input type="text" id="mbcap" value="1024" style="min-width:70px">
       <span class="tiny">MB</span>
@@ -297,7 +297,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793691268072,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793691719052,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -600,6 +600,7 @@ function openDrawer(id){
   }
 
   const kinds = s.typeCounts || [];
+  const cutCount = (s.events||[]).filter(e=>e.cut).length;
   const evCount = (s.events||[]).length;
   html += '<h2>事件流（'+evCount+' 条'
     +(kinds.length?('，共 '+kinds.reduce((a,[,c])=>a+c,0)+' 条记录'):'')+'）</h2>';
@@ -611,9 +612,9 @@ function openDrawer(id){
   }
   if(DATA.serve){
     html += '<div class="tiny" style="margin-bottom:8px">按需加载模式：点击任意记录展开服务端返回的完整原始 JSON（不截断）</div>';
-  } else if(s.rawChars){
+  } else if(cutCount){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
-      +'其余仅保留开头，用 <span class="mono">--serve</span> 可按需加载完整原文</div>';
+      +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
   html += (s.events||[]).map((e,i)=>{
     const raw = e.raw || '';
@@ -625,9 +626,9 @@ function openDrawer(id){
       +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
       + (raw
         ? '<pre class="raw" data-i="'+i+'">'+esc(raw.slice(0, RAW_PREVIEW))+(raw.length>RAW_PREVIEW?' …':'')+'</pre>'
-          + ((raw.length>RAW_PREVIEW || (DATA.serve && e.size>RAW_PREVIEW))
+          + ((raw.length>RAW_PREVIEW && e.cut!==2) || (DATA.serve && e.size>RAW_PREVIEW)
             ? '<div class="more">展开完整 JSON ▾</div>'
-            : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅显示开头，完整原文需提高 --budget 重新生成</div>' : ''))
+            : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
         : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>')
       +'</div></div>';
   }).join('') || '<div class="empty">该会话没有可展示的事件</div>';
@@ -793,10 +794,14 @@ function jsEvent(st, kind, ts, line, budget){
   const core = !!CORE_KINDS_JS[kind];
   if(core ? st.nCore >= JS_MAX_EVENTS : st.nAux >= JS_MAX_AUX) return;
   if(core) st.nCore++; else st.nAux++;
-  const want = Math.min(line.length, JS_RAW_ONE);
-  const room = budget - st.rawChars;
-  const take = want <= JS_RAW_PREVIEW ? want
-    : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
+  // budget 0 = keep every record whole, including the per-record cap
+  const take = budget === 0 ? line.length
+    : (() => {
+        const want = Math.min(line.length, JS_RAW_ONE);
+        const room = budget - st.rawChars;
+        return want <= JS_RAW_PREVIEW ? want
+          : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
+      })();
   const ev = {t: ts, k: kind, size: line.length, raw: line.slice(0, take)};
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
   if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
