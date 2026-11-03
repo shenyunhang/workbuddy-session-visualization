@@ -9,14 +9,15 @@
 
 ## 使用方式：选中 ~/.workbuddy 目录即可
 
-1. 用 **Chrome / Edge** 打开页面，点「**选择 WorkBuddy 目录**」，选中 `~/.workbuddy` 这个目录本身
-   （Windows 上是 `C:\Users\<你>\.workbuddy`）；也可以直接把目录或 `.jsonl` 文件拖进虚线框。
-   目录选择器只走进 `projects/` 和 `cache/conversation-product-spill/` 两个子目录 —— 整个
+1. 用 **Chrome / Edge** 打开页面。页面会按 `navigator` 判断系统并直接显示默认目录
+   （Windows `C:\Users\<你>\.workbuddy`、macOS `/Users/<你>/.workbuddy`、Linux `/home/<你>/.workbuddy`），
+   点「**打开并选择 WorkBuddy 目录**」选中它即可。
+2. 目录选择器只走进 `projects/` 和 `cache/conversation-product-spill/` 两个子目录 —— 整个
    `~/.workbuddy` 常常有十几万个文件、好几个 GB，全量枚举会让标签页在解析开始前就卡死。
 2. 页面在浏览器里完成全部解析：
    - `projects/<workspace>/<session>.jsonl` → 会话记录、事件流、工具与模型统计
    - `cache/conversation-product-spill/*.json` → 系统提示、agent 指令、工具说明
-   - 默认只解析最新的 40 个会话文件、最多读 80 MB（会话文件动辄几 MB，全量读会让标签页卡死），页面上都能改
+   - 默认解析最新的 100 个会话文件、最多读 1024 MB（会话文件动辄几 MB，页面上都能改）
    - 解析期间有进度条，并且**每解析完一批就立刻把会话画出来**；随时可以「停止解析」，已解析的会话保留
    - 扫描器只对少数几种小记录做完整 `JSON.parse`；占体积 96% 的工具调用/工具返回/文件快照/思考记录，
      只从原文前 1.5 KB 里正则抽取需要的字段（实测 104 MB 从 5.6 s 降到 3.2 s）
