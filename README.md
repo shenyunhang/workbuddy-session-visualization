@@ -1,6 +1,6 @@
 # WorkBuddy 会话看板
 
-在线地址：**https://shenyunhang.github.io/workbuddy-session-viz/**
+在线地址：**https://shenyunhang.github.io/workbuddy-session-visualization/**
 
 一个用于查看本机 WorkBuddy 会话记录的看板页面，纯静态、零依赖、零数据、零后端。
 
