@@ -115,6 +115,11 @@
     background:var(--panel2);transition:border-color .15s,background .15s}
   .drop.over{border-color:var(--blue);background:#1b2436}
   .drop .dz{font-size:13px;margin-bottom:4px}
+  .prog{height:7px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+    overflow:hidden;margin-top:10px}
+  .prog>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--teal));
+    transition:width .25s ease}
+  .progtxt{font-size:12px;color:var(--txt2);margin-top:6px;font-variant-numeric:tabular-nums}
   code{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px;
     font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--txt2)}
   details{margin-top:12px}
@@ -148,7 +153,7 @@
         <div style="font-size:13px"><b>① 选中数据目录（推荐）</b></div>
         <div class="tiny">选中 <code>~/.workbuddy</code> 这个目录本身，页面会自动找出
           <code>projects/*/*.jsonl</code> 会话记录和 <code>cache/conversation-product-spill/</code>
-          里的系统提示快照。</div>
+          里的系统提示快照。目录很大时浏览器要先枚举文件，可能要等几秒才有动静。</div>
         <div style="margin-top:8px"><button class="btn" id="dirbtn" type="button">选择 WorkBuddy 目录</button></div>
         <input type="file" id="dirpick" webkitdirectory directory multiple hidden>
       </div>
@@ -164,11 +169,14 @@
     <div class="drop" id="drop">
       <div class="dz">把 <b>~/.workbuddy</b> 目录或 <b>.jsonl</b> 文件拖到这里</div>
       <div class="tiny" id="filestatus" style="margin-top:6px"></div>
+      <div class="prog" id="prog" style="display:none"><i id="progbar"></i></div>
+      <div class="progtxt" id="progtxt" style="display:none"></div>
+      <div style="margin-top:8px"><button class="btn" id="cancelbtn" type="button" style="display:none">停止解析</button></div>
     </div>
 
     <div class="filters" style="margin-top:12px;margin-bottom:0">
       <span class="tiny">最多解析</span>
-      <input type="text" id="maxfiles" value="200" style="min-width:70px">
+      <input type="text" id="maxfiles" value="60" style="min-width:70px">
       <span class="tiny">个最新会话文件 · 每会话原始 JSON 预算</span>
       <input type="text" id="rawbudget" value="20000" style="min-width:90px">
       <span class="tiny">字符（0 = 不截断）</span>
@@ -297,7 +305,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793686214337,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793687367246,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -650,16 +658,17 @@ function buildMask(root){
 }
 const maskPath = s => { let v = String(s==null?'':s);
   for(const [re, rp] of MASK_RULES) v = v.replace(re, rp); return v; };
+function maskSession(s){
+  if(s.file) s.file = maskPath(s.file);
+  if(s.ws) s.ws = maskPath(s.ws);
+  if(s.cwd) s.cwd = maskPath(s.cwd);
+  if(s.title) s.title = maskPath(s.title);
+  if(s.prompt) s.prompt = maskPath(s.prompt);
+  (s.events||[]).forEach(e=>{ if(e.raw) e.raw = maskPath(e.raw); });
+}
 function applyPrivacy(){
   DATA.rootShown = maskPath(DATA.root);
-  S.forEach(s=>{
-    if(s.file) s.file = maskPath(s.file);
-    if(s.ws) s.ws = maskPath(s.ws);
-    if(s.cwd) s.cwd = maskPath(s.cwd);
-    if(s.title) s.title = maskPath(s.title);
-    if(s.prompt) s.prompt = maskPath(s.prompt);
-    (s.events||[]).forEach(e=>{ if(e.raw) e.raw = maskPath(e.raw); });
-  });
+  S.forEach(maskSession);
   if(P && P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
 }
 
@@ -946,9 +955,29 @@ async function filesFromDrop(dt){
   return out;
 }
 
-async function ingestFiles(files){
+/* Session files are large - a full history easily runs to hundreds of MB - so
+   the scan is incremental: every batch is rendered straight away, the progress
+   bar moves, and it can be stopped midway without losing what already parsed. */
+const BYTE_CAP = 400 * 1024 * 1024;   // stop reading rather than exhaust the tab
+let ingestRun = 0;
+function startIngest(fileList){
+  const files = Array.from(fileList || []);
   const st = $('filestatus');
-  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '200', 10) || 200);
+  // say something immediately: a big directory takes the browser a while to
+  // enumerate, and silence there reads as "nothing happened"
+  st.textContent = files.length
+    ? ('已选中 ' + files.length + ' 个文件，正在筛选会话记录 …')
+    : '没有读到任何文件，请重试（或改用「选择文件」）';
+  if(files.length) return ingestFiles(files);
+}
+function emptyProduct(err){
+  return {ok:false, error:err || '未找到产品配置快照（cache/conversation-product-spill/*.json）',
+    meta:{}, agents:[], tools:[], prompts:[], subagents:[], outputStyles:[], models:[]};
+}
+async function ingestFiles(files){
+  const run = ++ingestRun;
+  const st = $('filestatus');
+  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '60', 10) || 60);
   const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '20000', 10));
   const jsonl = [], prod = [], dump = [];
   for(const f of files){
@@ -965,33 +994,73 @@ async function ingestFiles(files){
   }
   jsonl.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
   const use = jsonl.slice(0, max);
-  const sessions = [];
-  for(let i = 0; i < use.length; i++){
-    const f = use[i];
-    st.textContent = '正在解析 ' + (i + 1) + '/' + use.length + ' … ' + (f.name || '');
-    let txt = '';
-    try { txt = await readText(f); } catch(e){ continue; }
-    const name = String(f.name || '').replace(/\.jsonl$/i, '');
-    sessions.push(jsParse(txt, name, fileLabel(f), f.size || txt.length, budget));
+
+  // reset the board so the first parsed session shows up on an empty table
+  S = [];
+  P = emptyProduct('正在解析，稍后载入系统提示快照');
+  DATA.generatedAt = Date.now();
+  DATA.root = ''; DATA.rootShown = '';
+  DATA.serve = false; DATA.deploy = false;
+  DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
+    indexedSessions:0, workspaces:0, jsonlFiles:jsonl.length, scanned:0};
+  let maskReady = false, bytes = 0, failed = 0, skipped = 0;
+  st.innerHTML = '找到 ' + jsonl.length + ' 个会话文件，开始解析最新的 ' + use.length + ' 个 …';
+  $('prog').style.display = ''; $('progtxt').style.display = ''; $('cancelbtn').style.display = '';
+  $('progbar').style.width = '0%';
+  const tick = done=>{
+    const pct = Math.round(done / use.length * 100);
+    $('progbar').style.width = pct + '%';
+    $('progtxt').textContent = '已解析 ' + S.length + ' / ' + use.length + ' 个会话 · '
+      + pct + '% · ' + (bytes / 1048576).toFixed(1) + ' MB'
+      + (failed ? ' · ' + failed + ' 个失败' : '') + (skipped ? ' · ' + skipped + ' 个跳过' : '');
+  };
+  tick(0);
+  renderAll();
+
+  let lastPaint = 0;
+  for(let i = 0; i < use.length; i += 3){
+    if(run !== ingestRun) break;
+    const batch = use.slice(i, i + 3);
+    for(const f of batch){
+      if(bytes > BYTE_CAP){ skipped++; continue; }
+      let txt = null;
+      try { txt = await readText(f); } catch(e){ failed++; continue; }
+      try {
+        const name = String(f.name || '').replace(/\.jsonl$/i, '');
+        const s = jsParse(txt, name, fileLabel(f), f.size || txt.length, budget);
+        bytes += txt.length;
+        if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
+        if(maskReady) maskSession(s);
+        S.push(s);
+      } catch(e){ failed++; }
+    }
+    DATA.source.indexedSessions = S.length;
+    DATA.source.scanned = S.length;
+    DATA.source.workspaces = new Set(S.map(s=>s.ws)).size;
+    tick(Math.min(i + 3, use.length));
+    // repaint at most a few times a second, but never leave a batch unseen
+    const now = Date.now();
+    if(i + 3 >= use.length || now - lastPaint > 250){ lastPaint = now; renderAll(); }
   }
-  let product = {ok:false, error:'未找到产品配置快照（cache/conversation-product-spill/*.json）',
-    meta:{}, agents:[], tools:[], prompts:[], subagents:[], outputStyles:[], models:[]};
-  if(prod.length){
+
+  let product = P;
+  if(prod.length && run === ingestRun){
     prod.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
-    try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || product; }
-    catch(e){ product.error = '产品配置解析失败：' + e.message; }
+    try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || P; }
+    catch(e){ product = emptyProduct('产品配置解析失败：' + e.message); }
   }
-  st.textContent = '解析完成，正在渲染 …';
-  applyPayload({
-    generatedAt: Date.now(),
-    root: '',
-    source: {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db', indexedSessions:sessions.length,
-      workspaces:new Set(sessions.map(s=>s.ws)).size, jsonlFiles:jsonl.length, scanned:sessions.length},
-    sessions: sessions,
-    product: product,
-  });
-  st.innerHTML = '<span style="color:'+C.teal+'">已解析 '+sessions.length+' 个会话（目录内共 '
-    +jsonl.length+' 个记录文件）'+(product.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照')+'</span>';
+  P = product;
+  if(P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
+  renderAll();
+  $('progbar').style.width = '100%';
+  $('cancelbtn').style.display = 'none';
+  const stopped = run !== ingestRun;
+  st.innerHTML = '<span style="color:' + (stopped ? C.amber : C.teal) + '">'
+    + (stopped ? '已停止' : '完成') + '：' + S.length + ' 个会话 · ' + (bytes / 1048576).toFixed(1) + ' MB'
+    + (jsonl.length > use.length ? '（目录内共 ' + jsonl.length + ' 个文件，可上调上限）' : '')
+    + (failed ? ' · ' + failed + ' 个文件读取或解析失败' : '')
+    + (skipped ? ' · ' + skipped + ' 个文件超出体积上限被跳过' : '')
+    + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
 }
 
 /* ---------- remote data source (optional, only if you really want a local service) ---------- */
@@ -1184,9 +1253,10 @@ if($('apigo')){
   $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
 }
 $('dirbtn').onclick = ()=>{ if($('dirpick').click) $('dirpick').click(); };
-$('dirpick').addEventListener('change', e=>{ ingestFiles(Array.from(e.target.files || [])); });
+$('cancelbtn').onclick = ()=>{ ingestRun++; };
+$('dirpick').addEventListener('change', e=>{ startIngest(e.target.files); });
 $('filebtn').onclick = ()=>{ if($('filepick').click) $('filepick').click(); };
-$('filepick').addEventListener('change', e=>{ ingestFiles(Array.from(e.target.files || [])); });
+$('filepick').addEventListener('change', e=>{ startIngest(e.target.files); });
 ['dragenter','dragover'].forEach(t=>document.addEventListener(t, e=>{
   e.preventDefault(); const dz = $('drop'); if(dz) dz.classList.add('over'); }));
 ['dragleave','dragend'].forEach(t=>document.addEventListener(t, e=>{
@@ -1195,7 +1265,7 @@ document.addEventListener('drop', async e=>{
   e.preventDefault();
   const dz = $('drop'); if(dz) dz.classList.remove('over');
   const files = await filesFromDrop(e.dataTransfer);
-  if(files.length) ingestFiles(files);
+  if(files.length) startIngest(files);
 });
 const needData = DATA.deploy || DATA.serve || !S.length;
 $('loadbox').style.display = needData ? '' : 'none';
