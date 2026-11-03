@@ -299,7 +299,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793697934163,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793702891453};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -643,9 +643,7 @@ function openDrawer(id){
       '<span class="tag" data-kind="'+esc(k)+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
       +esc(KIND_LABEL[k]||k)+' '+c+'</span>').join('')+'</div>';
   }
-  if(DATA.serve){
-    html += '<div class="tiny" style="margin-bottom:8px">按需加载模式：点击任意记录展开服务端返回的完整原始 JSON（不截断）</div>';
-  } else if(cutCount){
+  if(cutCount){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
@@ -659,7 +657,7 @@ function openDrawer(id){
       +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
       + (raw
         ? '<pre class="raw" data-i="'+i+'">'+esc(raw.slice(0, RAW_PREVIEW))+(raw.length>RAW_PREVIEW?' …':'')+'</pre>'
-          + ((raw.length>RAW_PREVIEW && e.cut!==2) || (DATA.serve && e.size>RAW_PREVIEW)
+          + ((raw.length>RAW_PREVIEW && e.cut!==2)
             ? '<div class="more">展开完整 JSON ▾</div>'
             : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
         : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>')
@@ -730,7 +728,6 @@ function applyPayload(d){
   DATA.generatedAt = d.generatedAt || 0;
   DATA.root = d.root || '';
   DATA.source = d.source || {};
-  DATA.serve = !!d.serve;
   DATA.deploy = false;
   // browser ingestion has no root path of its own, so fall back to the first
   // working directory seen in the records to learn what needs masking
@@ -747,7 +744,7 @@ function readDataFile(f){
   fr.onload = ()=>{
     try{
       const d = JSON.parse(String(fr.result));
-      if(!d || !Array.isArray(d.sessions)) throw new Error('文件里没有 sessions 数组，请确认是本工具生成的 data.json');
+      if(!d || !Array.isArray(d.sessions)) throw new Error('文件里没有 sessions 数组，请确认是页面可识别的 JSON 快照');
       applyPayload(d);
       st.innerHTML = '<span style="color:'+C.teal+'">已载入 '+esc(f.name)+' · '+fmtBytes(f.size)
         +' · '+d.sessions.length+' 个会话</span>';
@@ -760,8 +757,8 @@ function readDataFile(f){
 }
 
 /* ---------- browser-side scanner: read ~/.workbuddy straight off disk ----------
-   Same reduction as scan.py, reimplemented here so nothing has to run on the
-   machine: no python, no server, no upload. Only these files are ever read:
+   All parsing is reimplemented here in the page, so nothing has to run on the
+   machine: no helper script, no server, no upload. Only these files are ever read:
      projects/<workspace>/<session>.jsonl      conversation records
      cache/conversation-product-spill/*.json   system prompt / agent / tool config
    workbuddy.db is skipped on purpose - SQLite cannot be read without a WASM
@@ -1412,7 +1409,7 @@ async function ingestFiles(files){
   P = emptyProduct('正在解析，稍后载入系统提示快照');
   DATA.generatedAt = Date.now();
   DATA.root = ''; DATA.rootShown = '';
-  DATA.serve = false; DATA.deploy = false;
+  DATA.deploy = false;
   DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
     indexedSessions:0, workspaces:0, jsonlFiles:jsonl.length, scanned:0};
   let maskReady = false, bytes = 0, failed = 0, skipped = 0, sub = '';
@@ -1483,28 +1480,6 @@ async function ingestFiles(files){
     + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
 }
 
-/* ---------- remote data source (optional, only if you really want a local service) ---------- */
-let API = '';
-try { API = localStorage.getItem('wbvizApi') || ''; } catch(e){}
-const apiUrl = p => (API ? API.replace(/\/+$/, '') : '') + p;
-async function connectApi(){
-  const r = await fetch(apiUrl('/api/sessions'));
-  if(!r.ok) throw new Error('HTTP ' + r.status);
-  const d = await r.json();
-  S = d.sessions || [];
-  if(d.product) P = d.product;
-}
-
-/* in --serve mode the raw text is not inlined, fetch it once per session */
-const rawCache = {};
-function loadRaw(id, cb){
-  if(rawCache[id]) return cb(rawCache[id]);
-  fetch(apiUrl('/api/session/'+encodeURIComponent(id)))
-    .then(r=>r.json())
-    .then(d=>{ rawCache[id] = d.events || []; cb(rawCache[id]); })
-    .catch(()=>{ cb(null); });
-}
-
 /* shared fold / filter behaviour for both the drawer and the prompt view */
 function foldHandler(rootEl){
   return function(ev){
@@ -1551,16 +1526,6 @@ function foldHandler(rootEl){
         if(more) more.textContent = open ? '收起 ▴' : '展开完整 JSON ▾';
       };
       if(pre.dataset.full){ finish(); return; }
-      if(DATA.serve){
-        pre.textContent = '正在加载完整原文…';
-        loadRaw(cur.id, list=>{
-          const rec = list && list[idx];
-          if(rec && rec.raw){ pre.innerHTML = jsonHl(rec.raw); pre.dataset.full = '1'; }
-          else { pre.textContent = (cur.events[idx] && cur.events[idx].raw) || '加载失败'; }
-          finish();
-        });
-        return;
-      }
       const inline = cur.events[idx] && cur.events[idx].raw;
       if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline); pre.dataset.full = '1'; }
       finish();
@@ -1684,28 +1649,8 @@ function renderAll(){
   if($('p-agents').innerHTML) renderPrompts();
 }
 
-/* the hosted page starts empty and pulls everything from the local service */
-function doConnect(){
-  API = ($('apiurl').value || '').trim();
-  try { localStorage.setItem('wbvizApi', API); } catch(e){}
-  $('apistatus').textContent = '正在连接 ' + API + ' …';
-  connectApi()
-    .then(()=>{
-      $('apistatus').innerHTML = '已连接 · ' + S.length + ' 个会话';
-      renderAll();
-    })
-    .catch(err=>{
-      $('apistatus').innerHTML = '<span style="color:'+C.amber+'">连接失败：'+esc(err.message)
-        +'。确认本机已运行 scan.py --serve --allow-origin，且浏览器允许访问 localhost。</span>';
-    });
-}
 /* the hosted page ships with no data: hand it files or a folder and let the
    browser do the parsing */
-if($('apigo')){
-  $('apigo').onclick = doConnect;
-  $('apiurl').value = API;
-  $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
-}
 $('dirbtn').onclick = ()=>{ pickDir({useCached: $('dirbtn').dataset.cached === '1'}); };
 $('dirforget').onclick = e=>{ e.preventDefault(); pickDir({useCached: false}); };
 /* the picker is the browser's own dialog and cannot be given a path, but the
@@ -1743,7 +1688,7 @@ document.addEventListener('drop', async e=>{
   const files = await filesFromDrop(e.dataTransfer);
   if(files.length) startIngest(files);
 });
-const needData = DATA.deploy || DATA.serve || !S.length;
+const needData = DATA.deploy || !S.length;
 $('loadbox').style.display = needData ? '' : 'none';
 $('loadbtn').onclick = ()=>{
   const box = $('loadbox');
@@ -1753,7 +1698,6 @@ $('loadbtn').onclick = ()=>{
   if(show) box.scrollIntoView({block:'center'});
 };
 if(needData) $('loadbtn').textContent = '收起载入面板';
-if(API) doConnect();
 
 buildMask(DATA.root);
 applyPrivacy();
