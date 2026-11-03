@@ -111,6 +111,15 @@
     font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--txt2);word-break:break-all;margin-top:6px}
   .empty{padding:40px;text-align:center;color:var(--txt3)}
   footer{margin-top:26px;font-size:12px;color:var(--txt3)}
+  .drop{margin-top:12px;border:1px dashed var(--line2);border-radius:10px;padding:22px 18px;text-align:center;
+    background:var(--panel2);transition:border-color .15s,background .15s}
+  .drop.over{border-color:var(--blue);background:#1b2436}
+  .drop .dz{font-size:13px;margin-bottom:4px}
+  code{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--txt2)}
+  details{margin-top:12px}
+  summary{cursor:pointer;font-size:12px;color:var(--txt3)}
+  summary:hover{color:var(--txt2)}
 </style>
 </head>
 <body>
@@ -120,17 +129,32 @@
       <h1>WorkBuddy 会话看板</h1>
       <div class="tiny" id="subtitle"></div>
     </div>
-    <div class="tiny" id="srcinfo"></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="tiny" id="srcinfo"></div>
+      <button class="btn" id="loadbtn">载入数据文件</button>
+    </div>
   </header>
 
-  <div class="card" id="apibox" style="display:none;margin-bottom:18px">
-    <h2>数据源</h2>
-    <div class="sub">本页不含任何数据，需连接你本机运行的会话服务（数据始终留在本机）</div>
-    <div class="filters">
-      <input type="text" id="apiurl" placeholder="http://127.0.0.1:8777" style="min-width:300px">
-      <button class="btn" id="apigo">连接</button>
-      <span class="tiny" id="apistatus"></span>
+  <div class="card" id="loadbox" style="display:none;margin-bottom:18px">
+    <h2>载入数据（不经过任何服务器）</h2>
+    <div class="sub">这个页面本身不含任何会话数据。请在你<b>自己的电脑</b>上用 <code>python scan.py</code> 生成
+      <code>data.json</code>，然后把文件拖进下面这个框 —— 浏览器用 FileReader 直接读取并解析，
+      数据不会离开你的机器，也不会被上传。</div>
+    <div class="drop" id="drop">
+      <div class="dz">把 <b>data.json</b> 拖到这里</div>
+      <div class="tiny"><button class="btn" id="filebtn" type="button">选择文件</button>
+        <input type="file" id="filepick" accept=".json,application/json" hidden></div>
+      <div class="tiny" id="filestatus" style="margin-top:8px"></div>
     </div>
+    <div class="tiny" style="margin-top:8px">本机路径与系统用户名会自动脱敏显示为 <code>~</code>，截图分享也不会泄露。</div>
+    <details>
+      <summary>进阶：改为连接本机服务（需要一直开着终端，不推荐）</summary>
+      <div class="filters" style="margin-top:10px">
+        <input type="text" id="apiurl" placeholder="http://127.0.0.1:8777" style="min-width:300px">
+        <button class="btn" id="apigo">连接</button>
+        <span class="tiny" id="apistatus"></span>
+      </div>
+    </details>
   </div>
 
   <div class="tabs">
@@ -252,7 +276,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793682207361,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部填入数据源地址","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793683101565,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部拖入本机生成的 data.json","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -420,11 +444,11 @@ function renderMeta(){
     ['数据体积', fmtBytes(S.reduce((a,s)=>a+(s.bytes||0),0))],
   ];
   $('kpis').innerHTML = kpis.map(([k,v])=>'<div class="kpi"><div class="v">'+v+'</div><div class="k">'+k+'</div></div>').join('');
-  $('subtitle').textContent = (DATA.deploy ? '静态部署版 · 数据来自本机服务'
-    : '生成于 '+fmtTime(DATA.generatedAt)+' · 数据根目录 '+DATA.root);
+  $('subtitle').textContent = (DATA.deploy ? '静态部署版 · 页面不含数据，请在上方载入本机生成的 data.json'
+    : '生成于 '+fmtTime(DATA.generatedAt)+' · 数据根目录 '+(DATA.rootShown || DATA.root));
   const src = DATA.source || {};
   $('srcinfo').innerHTML = (src.indexedSessions ? ('索引会话 '+src.indexedSessions+' · 扫描文件 '+src.scanned+'/'+src.jsonlFiles)
-    : (S.length ? ('远程加载 '+S.length+' 个会话') : '尚未连接数据源'))
+    : (S.length ? ('已载入 '+S.length+' 个会话') : '尚未载入数据'))
     + (src.dbOk ? '' : (DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>'));
   $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。上下文使用率仅覆盖有用量记录的 '+ctxKnown+' 个会话。';
 }
@@ -589,7 +613,63 @@ function openDrawer(id){
   $('drawer').classList.add('on'); $('mask').classList.add('on');
 }
 
-/* ---------- remote data source (used by the static-hosted page) ---------- */
+/* ---------- privacy: strip the local home path / account name from everything shown ---------- */
+const MASK_RULES = [];
+function buildMask(root){
+  MASK_RULES.length = 0;
+  const m = String(root||'').match(/^(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|home|Documents and Settings)[\\/]{1,2}([^\\/]+)/i);
+  if(!m || m[1].length < 2) return;
+  const u = m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  MASK_RULES.push([new RegExp('(?:[A-Za-z]:)?[\\\\/]{1,2}(?:Users|home|Documents and Settings)[\\\\/]{1,2}'+u, 'gi'), '~']);
+  MASK_RULES.push([new RegExp('(?:Users|home|Documents and Settings)[-_.]'+u, 'gi'), '~']);
+  if(u.length >= 4) MASK_RULES.push([new RegExp(u, 'g'), '<user>']);
+}
+const maskPath = s => { let v = String(s==null?'':s);
+  for(const [re, rp] of MASK_RULES) v = v.replace(re, rp); return v; };
+function applyPrivacy(){
+  DATA.rootShown = maskPath(DATA.root);
+  S.forEach(s=>{
+    if(s.file) s.file = maskPath(s.file);
+    if(s.ws) s.ws = maskPath(s.ws);
+    (s.events||[]).forEach(e=>{ if(e.raw) e.raw = maskPath(e.raw); });
+  });
+  if(P && P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
+}
+
+/* ---------- local file loading: read data.json straight from disk, no server ---------- */
+function applyPayload(d){
+  S = d.sessions || [];
+  if(d.product && (d.product.ok || (d.product.prompts||[]).length)) P = d.product;
+  DATA.generatedAt = d.generatedAt || 0;
+  DATA.root = d.root || '';
+  DATA.source = d.source || {};
+  DATA.serve = !!d.serve;
+  DATA.deploy = false;
+  buildMask(DATA.root);
+  applyPrivacy();
+  renderAll();
+}
+function readDataFile(f){
+  if(!f) return;
+  const st = $('filestatus');
+  st.textContent = '正在读取 '+f.name+'（'+fmtBytes(f.size)+'）…';
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    try{
+      const d = JSON.parse(String(fr.result));
+      if(!d || !Array.isArray(d.sessions)) throw new Error('文件里没有 sessions 数组，请确认是本工具生成的 data.json');
+      applyPayload(d);
+      st.innerHTML = '<span style="color:'+C.teal+'">已载入 '+esc(f.name)+' · '+fmtBytes(f.size)
+        +' · '+d.sessions.length+' 个会话</span>';
+    }catch(err){
+      st.innerHTML = '<span style="color:'+C.amber+'">载入失败：'+esc(err.message)+'</span>';
+    }
+  };
+  fr.onerror = ()=>{ st.innerHTML = '<span style="color:'+C.amber+'">读取文件失败</span>'; };
+  fr.readAsText(f);
+}
+
+/* ---------- remote data source (optional, only if you really want a local service) ---------- */
 let API = '';
 try { API = localStorage.getItem('wbvizApi') || ''; } catch(e){}
 const apiUrl = p => (API ? API.replace(/\/+$/, '') : '') + p;
@@ -771,14 +851,37 @@ function doConnect(){
         +'。确认本机已运行 scan.py --serve --allow-origin，且浏览器允许访问 localhost。</span>';
     });
 }
-if(DATA.deploy || API){
-  $('apibox').style.display = '';
-  $('apiurl').value = API;
-  $('apigo').onclick = doConnect;
-  $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
-  if(API) doConnect();
-}
+/* the hosted page ships with no data: offer the file picker, and keep the
+   service option tucked away for anyone who really wants it */
+$('apigo').onclick = doConnect;
+$('apiurl').value = API;
+$('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
+$('filebtn').onclick = ()=>{ if($('filepick').click) $('filepick').click(); };
+$('filepick').addEventListener('change', e=>{ readDataFile(e.target.files && e.target.files[0]); });
+['dragenter','dragover'].forEach(t=>document.addEventListener(t, e=>{
+  e.preventDefault(); const dz = $('drop'); if(dz) dz.classList.add('over'); }));
+['dragleave','dragend'].forEach(t=>document.addEventListener(t, e=>{
+  const dz = $('drop'); if(dz) dz.classList.remove('over'); }));
+document.addEventListener('drop', e=>{
+  e.preventDefault();
+  const dz = $('drop'); if(dz) dz.classList.remove('over');
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f) readDataFile(f);
+});
+const needData = DATA.deploy || DATA.serve || !S.length;
+$('loadbox').style.display = needData ? '' : 'none';
+$('loadbtn').onclick = ()=>{
+  const box = $('loadbox');
+  const show = box.style.display === 'none';
+  box.style.display = show ? '' : 'none';
+  $('loadbtn').textContent = show ? '收起载入面板' : '载入数据文件';
+  if(show) box.scrollIntoView({block:'center'});
+};
+if(needData) $('loadbtn').textContent = '收起载入面板';
+if(API) doConnect();
 
+buildMask(DATA.root);
+applyPrivacy();
 renderAll();
 let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt = setTimeout(renderCharts, 150); });
 </script>
