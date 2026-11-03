@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy 会话看板</title>
+<style>
+  :root{
+    --bg:#0e1015; --panel:#161a22; --panel2:#1c212b; --line:#262c38; --line2:#323a49;
+    --txt:#e7eaf0; --txt2:#9aa4b8; --txt3:#6b7488;
+    --blue:#5b8cff; --teal:#2dd4bf; --amber:#f5a524; --red:#f2555a; --violet:#a78bfa; --gray:#64748b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6}
+  .wrap{max-width:1320px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:20px;font-weight:600;margin:0}
+  h2{font-size:14px;font-weight:600;margin:0 0 14px;color:var(--txt)}
+  .muted{color:var(--txt2)}
+  .tiny{font-size:12px;color:var(--txt3)}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .kpi .v{font-size:22px;font-weight:600;letter-spacing:.3px}
+  .kpi .k{font-size:12px;color:var(--txt2);margin-top:2px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card .sub{font-size:12px;color:var(--txt3);margin-bottom:10px}
+  .chart{width:100%;overflow:hidden}
+  svg{display:block}
+  .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  input[type=text],select{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);
+    border-radius:8px;padding:7px 10px;font-size:13px;outline:none;font-family:inherit}
+  input[type=text]{min-width:240px}
+  input[type=text]:focus,select:focus{border-color:var(--blue)}
+  .chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt2);cursor:pointer;user-select:none}
+  .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt2);border-radius:8px;
+    padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+  .btn:hover{border-color:var(--blue);color:var(--txt)}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:12px;font-weight:500;color:var(--txt3);padding:8px 10px;border-bottom:1px solid var(--line);
+    white-space:nowrap;cursor:pointer;user-select:none}
+  th:hover{color:var(--txt)}
+  th.on{color:var(--blue)}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
+  tr.row{cursor:pointer}
+  tr.row:hover td{background:var(--panel2)}
+  .tmax{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--txt2)}
+  .tag.b{color:var(--blue);border-color:#2c3f6b}
+  .tag.t{color:var(--teal);border-color:#24544d}
+  .tag.a{color:var(--amber);border-color:#5a4520}
+  .tag.r{color:var(--red);border-color:#5c2a2c}
+  .bar{height:5px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:56px}
+  .bar>i{display:block;height:100%;background:var(--blue)}
+  .num{font-variant-numeric:tabular-nums}
+  /* drawer */
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .18s;z-index:40}
+  .mask.on{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(760px,94vw);background:var(--panel);
+    border-left:1px solid var(--line2);transform:translateX(100%);transition:transform .22s ease;z-index:50;
+    display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .dhead{padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+  .dhead .t{font-size:16px;font-weight:600;margin-bottom:6px}
+  .dbody{overflow:auto;padding:16px 20px 40px;flex:1}
+  .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 14px;margin-bottom:18px}
+  .meta div{font-size:12px;color:var(--txt2)}
+  .meta b{color:var(--txt);font-weight:500}
+  .ev{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px}
+  .ev .ts{color:var(--txt3);font-size:11px;white-space:nowrap;width:82px;font-variant-numeric:tabular-nums;padding-top:2px}
+  .ev .dot{width:9px;height:9px;border-radius:50%;margin-top:7px;flex:none}
+  .ev .body{flex:1;min-width:0}
+  .ev .nm{font-size:12px;margin-bottom:1px}
+  .ev .tx{color:var(--txt2);word-break:break-word;white-space:pre-wrap;cursor:pointer}
+  .ev .tx.open{white-space:pre-wrap;color:var(--txt)}
+  .ev .more{font-size:11px;color:var(--blue);cursor:pointer;margin-top:2px}
+  /* thinking blocks */
+  .th{background:var(--panel2);border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden}
+  .th .hd{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 12px;cursor:pointer;
+    font-size:12px;color:var(--violet);border-bottom:1px solid transparent}
+  .th.on .hd{border-bottom-color:var(--line)}
+  .th .pv,.th .bd{padding:2px 12px 10px;font-size:13px;color:var(--txt2);white-space:pre-wrap;word-break:break-word}
+  .th .bd{display:none;color:var(--txt)}
+  .th.on .bd{display:block}
+  .th.on .pv{display:none}
+  .th .hd .ar{font-size:11px;color:var(--txt3)}
+  /* tabs */
+  .tabs{display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--txt3);
+    font-family:inherit;font-size:14px;padding:8px 14px;cursor:pointer;margin-bottom:-1px}
+  .tab:hover{color:var(--txt)}
+  .tab.on{color:var(--txt);border-bottom-color:var(--blue)}
+  /* event kind chips */
+  .kinds{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+  .kinds .tag{cursor:pointer;user-select:none}
+  .kinds .tag.off{opacity:.35;text-decoration:line-through}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .sub{font-size:12px;color:var(--txt3)}
+  /* raw json payload */
+  pre.raw{margin:4px 0 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;
+    white-space:pre-wrap;word-break:break-word;color:var(--txt2);background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:8px 10px;max-height:140px;overflow:hidden;cursor:pointer}
+  pre.raw.open{max-height:none}
+  .jk{color:#7fb3ff}
+  .js{color:#5fcf9a}
+  .jn{color:#f5a524}
+  .jb{color:#d4537e}
+  .pathbox{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--txt2);word-break:break-all;margin-top:6px}
+  .empty{padding:40px;text-align:center;color:var(--txt3)}
+  footer{margin-top:26px;font-size:12px;color:var(--txt3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>WorkBuddy 会话看板</h1>
+      <div class="tiny" id="subtitle"></div>
+    </div>
+    <div class="tiny" id="srcinfo"></div>
+  </header>
+
+  <div class="card" id="apibox" style="display:none;margin-bottom:18px">
+    <h2>数据源</h2>
+    <div class="sub">本页不含任何数据，需连接你本机运行的会话服务（数据始终留在本机）</div>
+    <div class="filters">
+      <input type="text" id="apiurl" placeholder="http://127.0.0.1:8777" style="min-width:300px">
+      <button class="btn" id="apigo">连接</button>
+      <span class="tiny" id="apistatus"></span>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="sessions">会话看板</button>
+    <button class="tab" data-tab="prompts">系统提示与工具</button>
+  </div>
+
+  <div id="view-sessions">
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>按天活跃度</h2>
+      <div class="sub">每日新建会话数与工具调用数</div>
+      <div class="chart" id="c-days"></div>
+    </div>
+    <div class="card">
+      <h2>时段分布</h2>
+      <div class="sub">所有消息按一天 24 小时的分布</div>
+      <div class="chart" id="c-hours"></div>
+    </div>
+    <div class="card">
+      <h2>模型分布</h2>
+      <div class="sub">按会话数统计</div>
+      <div class="chart" id="c-models"></div>
+    </div>
+    <div class="card">
+      <h2>工具调用 Top</h2>
+      <div class="sub">跨全部会话累计</div>
+      <div class="chart" id="c-tools"></div>
+    </div>
+    <div class="card">
+      <h2>工作空间 Top</h2>
+      <div class="sub">会话数最多的目录</div>
+      <div class="chart" id="c-ws"></div>
+    </div>
+    <div class="card">
+      <h2>上下文使用率</h2>
+      <div class="sub">会话占用上下文窗口的比例分布</div>
+      <div class="chart" id="c-ctx"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>会话列表</h2>
+    <div class="filters">
+      <input type="text" id="q" placeholder="搜索标题、提问内容、工作目录…">
+      <select id="f-ws"></select>
+      <select id="f-model"></select>
+      <select id="f-mode"></select>
+      <select id="f-sort">
+        <option value="updated">按最近更新</option>
+        <option value="created">按创建时间</option>
+        <option value="tools">按工具调用数</option>
+        <option value="turns">按对话轮数</option>
+        <option value="duration">按时长</option>
+        <option value="ctx">按上下文占用</option>
+        <option value="bytes">按文件体积</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="f-err"> 只看有工具报错</label>
+      <label class="chk"><input type="checkbox" id="f-agent"> 只看有工具调用</label>
+      <label class="chk"><input type="checkbox" id="f-think"> 只看有思考内容</label>
+      <span class="tiny" id="count"></span>
+    </div>
+    <div style="overflow:auto">
+      <table>
+        <thead><tr>
+          <th data-sort="title">标题</th>
+          <th data-sort="ws">工作空间</th>
+          <th data-sort="model">模型</th>
+          <th data-sort="updated">更新时间</th>
+          <th data-sort="turns">轮数</th>
+          <th data-sort="tools">工具</th>
+          <th data-sort="ctx">上下文</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="more-wrap" style="text-align:center;margin-top:14px"><button class="btn" id="more">加载更多</button></div>
+  </div>
+
+  <footer id="foot"></footer>
+  </div>
+
+  <div id="view-prompts" style="display:none">
+    <div class="kpis" id="p-kpis"></div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Agent 与系统提示</h2>
+      <div class="sub" id="p-src"></div>
+      <div id="p-agents"></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>工具定义</h2>
+      <div class="sub">工具名与其在系统提示中的完整描述文本</div>
+      <div class="filters"><input type="text" id="p-tool-q" placeholder="搜索工具名或描述…"></div>
+      <div id="p-tools"></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>提示词模板</h2>
+      <div class="sub">产品配置下发到模型侧的全部提示模板</div>
+      <div class="filters"><input type="text" id="p-prompt-q" placeholder="搜索模板名或内容…"></div>
+      <div id="p-prompts"></div>
+    </div>
+    <div class="card">
+      <h2>内置子代理</h2>
+      <div class="sub">子代理的系统提示原文</div>
+      <div id="p-sub"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer">
+  <div class="dhead">
+    <div class="t" id="d-title"></div>
+    <div class="tiny" id="d-sub"></div>
+  </div>
+  <div class="dbody" id="d-body"></div>
+</aside>
+
+<script>
+const DATA = {"generatedAt":1793682207361,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部填入数据源地址","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+let S = DATA.sessions || [];
+const $ = id => document.getElementById(id);
+const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); };
+const fmtDate = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
+  return (d.getMonth()+1)+'/'+p(d.getDate()); };
+const fmtDur = ms => { if(!ms||ms<0) return '—'; let s = Math.round(ms/1000);
+  if (s<60) return s+'s'; let m=Math.floor(s/60); if(m<60) return m+'m'; let h=Math.floor(m/60);
+  return h+'h'+(m%60?(' '+ (m%60)+'m'):''); };
+const fmtBytes = b => b>1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtSize = n => n==null ? '—' : (n>1024 ? (n/1024).toFixed(1)+'K 字符' : n+' 字符');
+const RAW_PREVIEW = 240;
+function jsonHl(raw){
+  const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?)|(true|false|null)/g;
+  let out = '', last = 0, m;
+  while((m = re.exec(raw)) !== null){
+    out += esc(raw.slice(last, m.index));
+    if(m[1] !== undefined){
+      const s = esc(m[1]);
+      out += m[2] ? '<span class="jk">'+s+'</span>'+esc(m[2]) : '<span class="js">'+s+'</span>';
+    } else if(m[3] !== undefined){
+      out += '<span class="jn">'+esc(m[3])+'</span>';
+    } else {
+      out += '<span class="jb">'+esc(m[4])+'</span>';
+    }
+    last = m.index + m[0].length;
+  }
+  return out + esc(raw.slice(last));
+}
+const C = {blue:'#5b8cff',teal:'#2dd4bf',amber:'#f5a524',red:'#f2555a',violet:'#a78bfa',gray:'#64748b',
+  green:'#639922',pink:'#d4537e'};
+const KIND_LABEL = {user:'用户输入',assistant:'助手回复',system:'系统提示',reasoning:'思考',tool:'工具调用',
+  result:'工具返回',meta:'会话元信息',title:'标题生成',snapshot:'文件快照',usage:'用量上报',credit:'积分扣减',fork:'重发分支'};
+const colorOf = k => ({user:C.blue,assistant:C.teal,system:C.pink,reasoning:C.violet,tool:C.amber,
+  result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray})[k] || C.gray;
+
+function svgEl(w,h){ return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" xmlns="http://www.w3.org/2000/svg">'; }
+
+/* ---------- vertical bars (day activity: sessions + tool calls) ---------- */
+function drawDays(el, days){
+  const w = el.clientWidth || 600, h = 190, padL=32, padR=8, padT=10, padB=22;
+  if(!days.length){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  const maxS = Math.max(1, ...days.map(d=>d.sessions));
+  const maxT = Math.max(1, ...days.map(d=>d.tools));
+  const iw = w-padL-padR, ih = h-padT-padB;
+  const bw = Math.max(2, Math.min(18, iw/days.length - 2));
+  const step = iw/days.length;
+  let s = svgEl(w,h);
+  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
+    s += '<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>';
+    s += '<text x="'+(padL-6)+'" y="'+(y+4)+'" text-anchor="end" fill="#6b7488" font-size="10">'+Math.round(maxS*(1-i/3))+'</text>'; }
+  days.forEach((d,i)=>{
+    const x = padL + i*step + (step-bw*2)/2;
+    const hs = ih*(d.sessions/maxS), ht = ih*(d.tools/maxT);
+    s += '<rect x="'+x+'" y="'+(padT+ih-hs)+'" width="'+bw+'" height="'+Math.max(1,hs)+'" fill="'+C.blue+'" rx="2"><title>'+d.label+' 会话 '+d.sessions+'</title></rect>';
+    s += '<rect x="'+(x+bw+1)+'" y="'+(padT+ih-ht)+'" width="'+bw+'" height="'+Math.max(1,ht)+'" fill="'+C.teal+'" opacity=".75" rx="2"><title>'+d.label+' 工具调用 '+d.tools+'</title></rect>';
+  });
+  const tick = Math.max(1, Math.ceil(days.length/8));
+  days.forEach((d,i)=>{ if(i%tick===0){
+    s += '<text x="'+(padL+i*step+step/2)+'" y="'+(h-6)+'" text-anchor="middle" fill="#6b7488" font-size="10">'+d.label+'</text>'; }});
+  s += '</svg>';
+  el.innerHTML = s;
+}
+
+/* ---------- hour histogram ---------- */
+function drawHours(el, arr){
+  const w = el.clientWidth||600, h=190, padL=28, padR=8, padT=10, padB=22;
+  const max = Math.max(1, ...arr);
+  const iw = w-padL-padR, ih = h-padT-padB, bw = iw/24;
+  let s = svgEl(w,h);
+  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
+    s += '<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>'; }
+  arr.forEach((v,i)=>{
+    const bh = ih*(v/max), x = padL+i*bw+1;
+    s += '<rect x="'+x+'" y="'+(padT+ih-bh)+'" width="'+(bw-2)+'" height="'+Math.max(1,bh)+'" fill="'+C.violet+'" opacity=".85" rx="2"><title>'+i+' 点：'+v+' 条</title></rect>';
+    if(i%3===0) s += '<text x="'+(padL+i*bw+bw/2)+'" y="'+(h-6)+'" text-anchor="middle" fill="#6b7488" font-size="10">'+i+'</text>';
+  });
+  s += '<text x="'+(padL-6)+'" y="'+(padT+8)+'" text-anchor="end" fill="#6b7488" font-size="10">'+max+'</text>';
+  s += '</svg>'; el.innerHTML = s;
+}
+
+/* ---------- horizontal bars ---------- */
+function drawHBar(el, items, color, unit){
+  const w = el.clientWidth||600;
+  if(!items.length){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  const rowH=24, padR=60, labelW=Math.min(190, Math.max(90, w*0.32)), padT=4;
+  const h = items.length*rowH + padT + 4;
+  const max = Math.max(1, ...items.map(i=>i.value));
+  const bw = w - labelW - padR;
+  let s = svgEl(w,h);
+  items.forEach((it,i)=>{
+    const y = padT + i*rowH, bh = 12;
+    const bwv = Math.max(2, bw*(it.value/max));
+    s += '<text x="'+(labelW-10)+'" y="'+(y+bh/2+4)+'" text-anchor="end" fill="#9aa4b8" font-size="11">'+esc(String(it.label).slice(0,28))+'</text>';
+    s += '<rect x="'+labelW+'" y="'+y+'" width="'+bwv+'" height="'+bh+'" fill="'+color+'" rx="3"><title>'+esc(it.label)+': '+it.value+'</title></rect>';
+    s += '<text x="'+(labelW+bwv+7)+'" y="'+(y+bh/2+4)+'" fill="#6b7488" font-size="11">'+it.value+(unit||'')+'</text>';
+  });
+  s += '</svg>'; el.innerHTML = s;
+}
+
+/* ---------- context histogram ---------- */
+function drawCtx(el, buckets){
+  const w = el.clientWidth||600, h=190, padL=28,padR=8,padT=10,padB=22;
+  const max = Math.max(1, ...buckets.map(b=>b.value));
+  const iw=w-padL-padR, ih=h-padT-padB, bw=iw/buckets.length;
+  let s=svgEl(w,h);
+  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
+    s+='<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>'; }
+  buckets.forEach((b,i)=>{
+    const bh=ih*(b.value/max), x=padL+i*bw+2;
+    s+='<rect x="'+x+'" y="'+(padT+ih-bh)+'" width="'+(bw-4)+'" height="'+Math.max(1,bh)+'" fill="'+C.amber+'" opacity=".85" rx="2"><title>'+b.label+'：'+b.value+' 个会话</title></rect>';
+    s+='<text x="'+(padL+i*bw+bw/2)+'" y="'+(h-6)+'" text-anchor="middle" fill="#6b7488" font-size="10">'+b.label+'</text>';
+  });
+  s+='<text x="'+(padL-6)+'" y="'+(padT+8)+'" text-anchor="end" fill="#6b7488" font-size="10">'+max+'</text>';
+  s+='</svg>'; el.innerHTML=s;
+}
+
+/* ---------- aggregate (recomputed whenever the session set changes) ---------- */
+const topArr = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value}));
+let days = [], hours = [], modelCount = {}, toolCount = {}, wsCount = {}, ctxBuckets = [], ctxKnown = 0;
+function compute(){
+  const dayMap = new Map();
+  S.forEach(s=>{
+    const key = s.created ? fmtDate(s.created) : '未知';
+    if(!dayMap.has(key)) dayMap.set(key,{label:key,sessions:0,tools:0,ms:s.created||0});
+    const d = dayMap.get(key); d.sessions++; d.tools += s.toolCalls||0;
+  });
+  days = [...dayMap.values()].sort((a,b)=>a.ms-b.ms);
+
+  hours = new Array(24).fill(0);
+  S.forEach(s=>(s.events||[]).forEach(e=>{ if(e.k==='user'||e.k==='assistant') hours[new Date(e.t).getHours()]++; }));
+
+  modelCount = {}; toolCount = {}; wsCount = {};
+  S.forEach(s=>{
+    modelCount[s.model||'未知'] = (modelCount[s.model||'未知']||0)+1;
+    wsCount[s.ws||'未知'] = (wsCount[s.ws||'未知']||0)+1;
+    (s.tools||[]).forEach(([n,c])=>{ toolCount[n]=(toolCount[n]||0)+c; });
+  });
+
+  ctxBuckets = ['0-20','20-40','40-60','60-80','80-100'].map(label=>({label,value:0}));
+  ctxKnown = 0;
+  S.forEach(s=>{
+    if(s.ctxUsed==null||!s.ctxSize) return;
+    ctxKnown++;
+    const p = Math.min(99, Math.round(s.ctxUsed/s.ctxSize*100));
+    ctxBuckets[Math.min(4, Math.floor(p/20))].value++;
+  });
+}
+
+/* ---------- KPI ---------- */
+function renderMeta(){
+  const totalTurns = S.reduce((a,s)=>a+(s.turnsUser||0)+(s.turnsAssistant||0),0);
+  const totalTools = S.reduce((a,s)=>a+(s.toolCalls||0),0);
+  const spanDays = (()=>{ const ts=S.map(s=>s.created).filter(Boolean); if(!ts.length) return 0;
+    return Math.max(1, Math.round((Math.max(...ts)-Math.min(...ts))/86400000)); })();
+  const totalThinking = S.reduce((a,s)=>a+(s.reasoning||0),0);
+  const kpis = [
+    ['会话总数', S.length],
+    ['工作空间', Object.keys(wsCount).length],
+    ['消息条数', totalTurns.toLocaleString()],
+    ['工具调用', totalTools.toLocaleString()],
+    ['思考片段', totalThinking.toLocaleString()],
+    ['覆盖天数', spanDays],
+    ['数据体积', fmtBytes(S.reduce((a,s)=>a+(s.bytes||0),0))],
+  ];
+  $('kpis').innerHTML = kpis.map(([k,v])=>'<div class="kpi"><div class="v">'+v+'</div><div class="k">'+k+'</div></div>').join('');
+  $('subtitle').textContent = (DATA.deploy ? '静态部署版 · 数据来自本机服务'
+    : '生成于 '+fmtTime(DATA.generatedAt)+' · 数据根目录 '+DATA.root);
+  const src = DATA.source || {};
+  $('srcinfo').innerHTML = (src.indexedSessions ? ('索引会话 '+src.indexedSessions+' · 扫描文件 '+src.scanned+'/'+src.jsonlFiles)
+    : (S.length ? ('远程加载 '+S.length+' 个会话') : '尚未连接数据源'))
+    + (src.dbOk ? '' : (DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>'));
+  $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。上下文使用率仅覆盖有用量记录的 '+ctxKnown+' 个会话。';
+}
+
+/* ---------- charts ---------- */
+function renderCharts(){
+  drawDays($('c-days'), days);
+  drawHours($('c-hours'), hours);
+  drawHBar($('c-models'), topArr(modelCount), C.blue);
+  drawHBar($('c-tools'), topArr(toolCount), C.teal);
+  drawHBar($('c-ws'), topArr(wsCount), C.violet);
+  drawCtx($('c-ctx'), ctxBuckets);
+}
+
+/* ---------- filters ---------- */
+const uniq = arr => [...new Set(arr)].sort();
+const modeOf = s => (s.config&&(s.config.interaction||s.config.mode)) || '未知';
+function renderFilters(){
+  $('f-ws').innerHTML = '<option value="">全部工作空间</option>' + uniq(S.map(s=>s.ws)).map(v=>'<option>'+esc(v)+'</option>').join('');
+  $('f-model').innerHTML = '<option value="">全部模型</option>' + uniq(S.map(s=>s.model||'未知')).map(v=>'<option>'+esc(v)+'</option>').join('');
+  $('f-mode').innerHTML = '<option value="">全部模式</option>' + uniq(S.map(modeOf)).map(v=>'<option>'+esc(v)+'</option>').join('');
+}
+
+let sortKey = 'updated', page = 0, PAGE = 40;
+function filtered(){
+  const q = $('q').value.trim().toLowerCase();
+  const ws = $('f-ws').value, mdl = $('f-model').value, mde = $('f-mode').value,
+        errOnly = $('f-err').checked, agentOnly = $('f-agent').checked, thinkOnly = $('f-think').checked;
+  return S.filter(s=>{
+    if(ws && s.ws!==ws) return false;
+    if(mdl && (s.model||'未知')!==mdl) return false;
+    if(mde && modeOf(s)!==mde) return false;
+    if(errOnly && !(s.toolErrors>0)) return false;
+    if(agentOnly && !(s.toolCalls>0)) return false;
+    if(thinkOnly && !(s.thinking && s.thinking.length)) return false;
+    if(q){
+      const hay = ((s.title||'')+' '+(s.prompt||'')+' '+(s.cwd||'')+' '+(s.model||'')).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  }).sort((a,b)=>{
+    const g = (o,k)=> k==='updated'?(o.updated||0):k==='created'?(o.created||0):k==='tools'?(o.toolCalls||0)
+      :k==='turns'?((o.turnsUser||0)+(o.turnsAssistant||0)):k==='duration'?(o.duration||0)
+      :k==='ctx'?((o.ctxSize?o.ctxUsed/o.ctxSize:0)):(o.bytes||0);
+    return g(b,sortKey)-g(a,sortKey);
+  });
+}
+function renderList(reset){
+  if(reset) page = 0;
+  const list = filtered();
+  $('count').textContent = '共 '+list.length+' 个会话';
+  const slice = list.slice(0, (page+1)*PAGE);
+  $('rows').innerHTML = slice.map(s=>{
+    const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
+    return '<tr class="row" data-id="'+esc(s.id)+'">'
+      +'<td class="tmax" title="'+esc(s.prompt)+'">'+esc(s.title)+'</td>'
+      +'<td class="tmax muted">'+esc(s.ws)+'</td>'
+      +'<td><span class="tag b">'+esc(s.model||'未知')+'</span></td>'
+      +'<td class="tiny num">'+fmtTime(s.updated||s.created||0)+'</td>'
+      +'<td class="num">'+(s.turnsUser||0)+' / '+(s.turnsAssistant||0)+'</td>'
+      +'<td class="num">'+(s.toolCalls||0)+(s.toolErrors?' <span class="tag r">'+s.toolErrors+' 错</span>':'')+'</td>'
+      +'<td>'+(pct==null?'<span class="tiny">—</span>'
+        :'<div style="display:flex;align-items:center;gap:6px"><div class="bar"><i style="width:'+pct+'%;background:'+(pct>80?C.red:pct>50?C.amber:C.teal)+'"></i></div><span class="tiny num">'+pct+'%</span></div>')+'</td>'
+      +'</tr>';
+  }).join('') || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
+  $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
+}
+document.querySelectorAll('th[data-sort]').forEach(th=>{
+  th.onclick = ()=>{ sortKey = th.dataset.sort;
+    document.querySelectorAll('th[data-sort]').forEach(o=>o.classList.remove('on'));
+    th.classList.add('on'); renderList(true); };
+});
+['q','f-ws','f-model','f-mode','f-err','f-agent','f-think','f-sort'].forEach(id=>{
+  const el = $(id);
+  el.addEventListener(id==='q'?'input':'change', ()=>{ if(id==='f-sort') sortKey = el.value; renderList(true); });
+});
+$('more').onclick = ()=>{ page++; renderList(false); };
+
+/* ---------- drawer ---------- */
+let cur = null;   // session currently shown in the drawer
+let hiddenKinds = new Set();   // event kinds filtered out of the drawer timeline
+function openDrawer(id){
+  const s = S.find(x=>x.id===id); if(!s) return;
+  cur = s;
+  $('d-title').textContent = s.title;
+  $('d-sub').innerHTML = esc(s.ws)+' · '+esc(s.model||'未知')+' · '+fmtTime(s.created||0)
+    +(s.duration?' · 持续 '+fmtDur(s.duration):'');
+  const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
+  const meta = [
+    ['状态', s.status], ['会话 ID', s.id], ['工作目录', s.cwd||'—'],
+    ['用户 / 助手消息', (s.turnsUser||0)+' / '+(s.turnsAssistant||0)],
+    ['工具调用', (s.toolCalls||0)+(s.toolErrors?('（'+s.toolErrors+' 次报错）'):'')],
+    ['思考片段', s.reasoning||0], ['上下文占用', pct==null?'—':(pct+'%（'+s.ctxUsed.toLocaleString()+' / '+s.ctxSize.toLocaleString()+'）')],
+    ['记录行数 / 体积', (s.lines||0)+' 行 / '+fmtBytes(s.bytes||0)],
+  ];
+  const u = s.usage || {};
+  if(u.tokensIn || u.tokensOut || u.credit || u.creditFromUsage){
+    meta.push(['输入 / 输出 token', (u.tokensIn||0).toLocaleString()+' / '+(u.tokensOut||0).toLocaleString()]);
+    if(u.cacheRead || u.cacheWrite)
+      meta.push(['缓存读 / 写 token', (u.cacheRead||0).toLocaleString()+' / '+(u.cacheWrite||0).toLocaleString()]);
+    meta.push(['积分消耗', (u.credit || u.creditFromUsage || 0).toFixed(2)
+      + (u.creditRecords ? '（'+u.creditRecords+' 条记录）' : '')]);
+  }
+  let html = '<div class="meta">'+meta.map(([k,v])=>'<div><b>'+esc(k)+'</b>：'+esc(v)+'</div>').join('')+'</div>';
+  if(s.prompt) html += '<div class="tiny" style="margin-bottom:14px">首条提问：'+esc(s.prompt)+'</div>';
+  if(s.tools && s.tools.length){
+    html += '<h2>工具调用</h2><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px">'
+      + s.tools.map(([n,c])=>'<span class="tag t">'+esc(n)+' ×'+c+'</span>').join('')+'</div>';
+  }
+  const cfg = s.config || {};
+  const cfgRows = [
+    ['交互模式', cfg.interaction], ['会话模式', cfg.mode], ['来源模式', cfg.source],
+    ['权限模式', cfg.permission], ['思考级别', cfg.thought],
+    ['上下文窗口', cfg.ctxWindow ? cfg.ctxWindow.toLocaleString() : null],
+    ['运行时', cfg.runtime], ['宿主类型', cfg.host],
+  ].filter(p => p[1]);
+  if(cfgRows.length || (s.plugins && s.plugins.length)){
+    html += '<h2>会话配置 · 提示词上下文</h2>'
+      +'<div class="meta">'+cfgRows.map(([k,v])=>'<div><b>'+esc(k)+'</b>：'+esc(v)+'</div>').join('')+'</div>';
+    if(s.plugins && s.plugins.length){
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px">'
+        + s.plugins.map(p=>'<span class="tag a">'+esc(p)+'</span>').join('')+'</div>';
+    }
+    html += '<div class="tiny" style="margin:8px 0 18px">系统提示原文随请求体发送，不落盘本地；以上为决定其内容的可观测配置。</div>';
+  }
+
+  const kinds = s.typeCounts || [];
+  const evCount = (s.events||[]).length;
+  html += '<h2>事件流（'+evCount+' 条'
+    +(kinds.length?('，共 '+kinds.reduce((a,[,c])=>a+c,0)+' 条记录'):'')+'）</h2>';
+  if(kinds.length){
+    hiddenKinds = new Set();
+    html += '<div class="kinds">'+kinds.map(([k,c])=>
+      '<span class="tag" data-kind="'+esc(k)+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
+      +esc(KIND_LABEL[k]||k)+' '+c+'</span>').join('')+'</div>';
+  }
+  if(DATA.serve){
+    html += '<div class="tiny" style="margin-bottom:8px">按需加载模式：点击任意记录展开服务端返回的完整原始 JSON（不截断）</div>';
+  } else if(s.rawChars){
+    html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
+      +'其余仅保留开头，用 <span class="mono">--serve</span> 可按需加载完整原文</div>';
+  }
+  html += (s.events||[]).map((e,i)=>{
+    const raw = e.raw || '';
+    const tag = esc(KIND_LABEL[e.k] || e.k);
+    const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
+    return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'+(e.t?fmtTime(e.t).slice(5):'')+'</div>'
+      +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
+      +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
+      +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
+      + (raw
+        ? '<pre class="raw" data-i="'+i+'">'+esc(raw.slice(0, RAW_PREVIEW))+(raw.length>RAW_PREVIEW?' …':'')+'</pre>'
+          + ((raw.length>RAW_PREVIEW || (DATA.serve && e.size>RAW_PREVIEW))
+            ? '<div class="more">展开完整 JSON ▾</div>'
+            : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅显示开头，完整原文需提高 --budget 重新生成</div>' : ''))
+        : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>')
+      +'</div></div>';
+  }).join('') || '<div class="empty">该会话没有可展示的事件</div>';
+  html += '<div class="tiny" style="margin-top:16px">原始记录文件</div><div class="pathbox">'+esc(s.file)+'</div>';
+  $('d-body').innerHTML = html;
+
+  $('drawer').classList.add('on'); $('mask').classList.add('on');
+}
+
+/* ---------- remote data source (used by the static-hosted page) ---------- */
+let API = '';
+try { API = localStorage.getItem('wbvizApi') || ''; } catch(e){}
+const apiUrl = p => (API ? API.replace(/\/+$/, '') : '') + p;
+async function connectApi(){
+  const r = await fetch(apiUrl('/api/sessions'));
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  const d = await r.json();
+  S = d.sessions || [];
+  if(d.product) P = d.product;
+}
+
+/* in --serve mode the raw text is not inlined, fetch it once per session */
+const rawCache = {};
+function loadRaw(id, cb){
+  if(rawCache[id]) return cb(rawCache[id]);
+  fetch(apiUrl('/api/session/'+encodeURIComponent(id)))
+    .then(r=>r.json())
+    .then(d=>{ rawCache[id] = d.events || []; cb(rawCache[id]); })
+    .catch(()=>{ cb(null); });
+}
+
+/* shared fold / filter behaviour for both the drawer and the prompt view */
+function foldHandler(rootEl){
+  return function(ev){
+    const chip = ev.target.closest('.kinds .tag');
+    if(chip){
+      const k = chip.dataset.kind;
+      if(hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
+      chip.classList.toggle('off', hiddenKinds.has(k));
+      rootEl.querySelectorAll('.ev').forEach(r=>{
+        r.style.display = hiddenKinds.has(r.dataset.k) ? 'none' : '';
+      });
+      return;
+    }
+    const head = ev.target.closest('.th .hd');
+    if(head){
+      const box = head.parentElement; box.classList.toggle('on');
+      const ar = head.querySelector('.ar');
+      if(ar) ar.textContent = box.classList.contains('on') ? '收起 ▴' : '展开 ▾';
+      return;
+    }
+    const all = ev.target.closest('[data-act="th-all"]');
+    if(all){
+      const expand = all.dataset.state !== 'on';
+      rootEl.querySelectorAll('.th').forEach(b=>{
+        b.classList.toggle('on', expand);
+        const a = b.querySelector('.ar'); if(a) a.textContent = expand ? '收起 ▴' : '展开 ▾';
+      });
+      all.dataset.state = expand ? 'on' : 'off';
+      all.textContent = expand ? '收起全部' : '展开全部';
+      return;
+    }
+    const hit = ev.target.closest('.raw, .more');
+    if(hit && cur){
+      const row = hit.closest('.ev'); if(!row) return;
+      const pre = row.querySelector('.raw'); if(!pre) return;
+      const more = row.querySelector('.more');
+      const idx = +pre.dataset.i;
+      const finish = ()=>{
+        const open = pre.classList.toggle('open');
+        if(more) more.textContent = open ? '收起 ▴' : '展开完整 JSON ▾';
+      };
+      if(pre.dataset.full){ finish(); return; }
+      if(DATA.serve){
+        pre.textContent = '正在加载完整原文…';
+        loadRaw(cur.id, list=>{
+          const rec = list && list[idx];
+          if(rec && rec.raw){ pre.innerHTML = jsonHl(rec.raw); pre.dataset.full = '1'; }
+          else { pre.textContent = (cur.events[idx] && cur.events[idx].raw) || '加载失败'; }
+          finish();
+        });
+        return;
+      }
+      const inline = cur.events[idx] && cur.events[idx].raw;
+      if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline); pre.dataset.full = '1'; }
+      finish();
+    }
+  };
+}
+$('d-body').onclick = foldHandler($('d-body'));
+function closeDrawer(){ $('drawer').classList.remove('on'); $('mask').classList.remove('on'); }
+$('mask').onclick = closeDrawer;
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+$('rows').addEventListener('click', e=>{
+  const tr = e.target.closest('tr.row'); if(tr) openDrawer(tr.dataset.id);
+});
+
+/* ---------- prompt / product config view ---------- */
+let P = DATA.product || {};
+function foldItem(title, meta, body){
+  const text = body || '';
+  return '<div class="th"><div class="hd"><span>'+esc(title)+'</span><span class="ar">'
+    +(meta?esc(meta)+' · ':'')+'展开 ▾</span></div>'
+    +'<div class="pv">'+esc(text.slice(0,300))+(text.length>300?'…':'')+'</div>'
+    +'<div class="bd">'+esc(text)+'</div></div>';
+}
+function renderPrompts(){
+  if(!P.ok){
+    $('p-src').innerHTML = '<span style="color:'+C.amber+'">未找到产品配置：'+esc(P.error||'未知原因')+'</span>';
+    return;
+  }
+  const m = P.meta || {};
+  $('p-src').innerHTML = esc(m.productName||'')+' · genie '+esc(m.genieVersion||'?')
+    +' · commit '+esc((m.commit||'').slice(0,8))+' · '+esc((m.date||'').slice(0,10))
+    +' · 本地快照 '+m.snapshots+' 个<div class="pathbox">'+esc(m.file||'')+'</div>';
+  $('p-kpis').innerHTML = [
+    ['Agent', (P.agents||[]).length],
+    ['工具定义', (P.tools||[]).length],
+    ['提示模板', (P.prompts||[]).length],
+    ['子代理', (P.subagents||[]).length],
+    ['模型', (P.models||[]).length],
+    ['提示文本', Math.round((P.prompts||[]).reduce((a,x)=>a+x.len,0)/1000)+'K 字'],
+  ].map(([k,v])=>'<div class="kpi"><div class="v">'+v+'</div><div class="k">'+k+'</div></div>').join('');
+
+  $('p-agents').innerHTML = (P.agents||[]).map(a=>{
+    const meta = ((a.modelTags||[]).length?a.modelTags.join('/')+' · ':'')+((a.tools||[]).length)+' 个工具';
+    return '<div class="th"><div class="hd"><span><b>'+esc(a.name||'?')+'</b>'
+      +(a.desc?(' — '+esc(a.desc)):'')+'</span><span class="ar">'+esc(meta)+' · 展开 ▾</span></div>'
+      +'<div class="pv">'+esc((a.prompt||'').slice(0,300))+((a.prompt||'').length>300?'…':'')+'</div>'
+      +'<div class="bd">'+esc(a.prompt||'（该 agent 无 instructions 文本）')+'</div></div>';
+  }).join('');
+
+  const drawTools = ()=>{
+    const q = ($('p-tool-q').value||'').trim().toLowerCase();
+    const list = (P.tools||[]).filter(t=>!q || (t.name||'').toLowerCase().includes(q)
+      || (t.prompt||'').toLowerCase().includes(q));
+    $('p-tools').innerHTML = list.map(t=>foldItem(t.name, null, t.prompt)).join('')
+      || '<div class="empty">没有匹配的工具</div>';
+  };
+  const drawPrompts = ()=>{
+    const q = ($('p-prompt-q').value||'').trim().toLowerCase();
+    const list = (P.prompts||[]).filter(p=>!q || p.name.toLowerCase().includes(q)
+      || p.text.toLowerCase().includes(q));
+    $('p-prompts').innerHTML = list.slice(0,60).map(p=>foldItem(p.name, p.len+' 字', p.text)).join('')
+      + (list.length>60 ? '<div class="tiny" style="margin-top:8px">匹配 '+list.length+' 条，仅渲染前 60 条，请用搜索缩小范围</div>' : '')
+      || '<div class="empty">没有匹配的模板</div>';
+  };
+  drawTools(); drawPrompts();
+  if($('p-tool-q').addEventListener) $('p-tool-q').addEventListener('input', drawTools);
+  if($('p-prompt-q').addEventListener) $('p-prompt-q').addEventListener('input', drawPrompts);
+
+  $('p-sub').innerHTML = (P.subagents||[]).map(s=>foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
+    || '<div class="empty">无内置子代理</div>';
+
+  ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ $(id).onclick = foldHandler($(id)); });
+}
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(o=>o.classList.remove('on'));
+    t.classList.add('on');
+    const on = t.dataset.tab === 'sessions';
+    $('view-sessions').style.display = on ? '' : 'none';
+    $('view-prompts').style.display = on ? 'none' : '';
+    if(on) renderCharts(); else renderPrompts();
+  };
+});
+
+function renderAll(){
+  compute();
+  renderMeta();
+  renderFilters();
+  renderCharts();
+  renderList(true);
+  if($('p-agents').innerHTML) renderPrompts();
+}
+
+/* the hosted page starts empty and pulls everything from the local service */
+function doConnect(){
+  API = ($('apiurl').value || '').trim();
+  try { localStorage.setItem('wbvizApi', API); } catch(e){}
+  $('apistatus').textContent = '正在连接 ' + API + ' …';
+  connectApi()
+    .then(()=>{
+      $('apistatus').innerHTML = '已连接 · ' + S.length + ' 个会话';
+      renderAll();
+    })
+    .catch(err=>{
+      $('apistatus').innerHTML = '<span style="color:'+C.amber+'">连接失败：'+esc(err.message)
+        +'。确认本机已运行 scan.py --serve --allow-origin，且浏览器允许访问 localhost。</span>';
+    });
+}
+if(DATA.deploy || API){
+  $('apibox').style.display = '';
+  $('apiurl').value = API;
+  $('apigo').onclick = doConnect;
+  $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
+  if(API) doConnect();
+}
+
+renderAll();
+let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt = setTimeout(renderCharts, 150); });
+</script>
+</body>
+</html>
