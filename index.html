@@ -299,7 +299,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793693736133,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793694489322,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -558,7 +558,11 @@ let hiddenKinds = new Set();   // event kinds filtered out of the drawer timelin
 function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   cur = s;
-  $('d-title').textContent = s.title;
+  $('d-title').innerHTML = esc(s.title)
+    + (s.titleSrc === 'prompt'
+      ? ' <span class="tag a" title="该文件里没有 ai-title 记录，标题取自首条提问">取首条提问</span>'
+      : (s.titleSrc === 'none'
+        ? ' <span class="tag" title="既无 ai-title 也无用户消息">无标题</span>' : ''));
   $('d-sub').innerHTML = esc(s.ws)+' · '+esc(s.model||'未知')+' · '+fmtTime(s.created||0)
     +(s.duration?' · 持续 '+fmtDur(s.duration):'');
   const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
@@ -759,6 +763,16 @@ function jsText(content){
   }
   return '';
 }
+/* The first user turn is wrapped in injected context - system reminders, user
+   info, identity files - that is far longer than the question itself and makes
+   a useless title. Drop those blocks, keep what the user actually typed. */
+const RE_CTX_BLOCK = /<(system-reminder|user_info|identity_context|ide_selection|environment_details|local-command-stdout|command-name|command-message|command-args|available-deferred-tools)[\s\S]*?<\/\1>/gi;
+const RE_CTX_TAG = /<\/?(user_query|system-reminder|user_info|identity_context)>/gi;
+function jsUserText(txt){
+  let s = String(txt == null ? '' : txt);
+  s = s.replace(RE_CTX_BLOCK, ' ').replace(RE_CTX_TAG, ' ');
+  return s.replace(/\s+/g, ' ').trim();
+}
 function workspaceLabel(cwd){
   if(!cwd) return '';
   const p = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
@@ -873,7 +887,7 @@ function jsLine(st, raw, budget){
       st.turnsUser++;
       if(!st.firstPrompt){
         const rec = jsParseLine(line, st);
-        if(rec) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
+        if(rec) st.firstPrompt = jsSnippet(jsUserText(jsText(rec.content)), 300);
       }
     } else if(role === 'assistant') st.turnsAssistant++;
     else if(role === 'system') st.systemMsgs++;
@@ -936,7 +950,7 @@ function jsRecord(st, line, budget){
     const role = rec.role;
     if(role === 'user'){
       st.turnsUser++;
-      if(!st.firstPrompt) st.firstPrompt = jsSnippet(jsText(rec.content), 300);
+      if(!st.firstPrompt) st.firstPrompt = jsSnippet(jsUserText(jsText(rec.content)), 300);
     } else if(role === 'assistant') st.turnsAssistant++;
     else if(role === 'system') st.systemMsgs++;
   } else if(rtype === 'reasoning') st.reasoning++;
@@ -967,7 +981,10 @@ function jsFinish(st, id, wsFallback, size){
   const created = st.firstTs, updated = st.lastTs;
   return {
     id: id,
-    title: st.title || st.firstPrompt || '(untitled)',
+    // no ai-title record means the model never wrote one; fall back to the
+    // first question, cleaned of injected context, and say so in the drawer
+    title: st.title || jsSnippet(st.firstPrompt, 120) || '(无标题)',
+    titleSrc: st.title ? 'ai' : (st.firstPrompt ? 'prompt' : 'none'),
     cwd: st.cwd,
     ws: workspaceLabel(st.cwd) || wsFallback || '未知',
     model: models.length ? models[0][0] : null,
