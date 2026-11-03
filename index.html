@@ -58,7 +58,7 @@
   /* drawer */
   .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .18s;z-index:40}
   .mask.on{opacity:1;pointer-events:auto}
-  .drawer{position:fixed;top:0;right:0;height:100%;width:min(760px,94vw);background:var(--panel);
+  .drawer{position:fixed;top:0;right:0;height:100%;width:clamp(50vw,60vw,96vw);background:var(--panel);
     border-left:1px solid var(--line2);transform:translateX(100%);transition:transform .22s ease;z-index:50;
     display:flex;flex-direction:column}
   .drawer.on{transform:none}
@@ -101,7 +101,7 @@
   /* raw json payload */
   pre.raw{margin:4px 0 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;
     white-space:pre-wrap;word-break:break-word;color:var(--txt2);background:var(--panel2);
-    border:1px solid var(--line);border-radius:8px;padding:8px 10px;max-height:140px;overflow:hidden;cursor:pointer}
+    border:1px solid var(--line);border-radius:8px;padding:8px 10px;max-height:200px;overflow:hidden;cursor:pointer}
   pre.raw.open{max-height:none}
   .jk{color:#7fb3ff}
   .js{color:#5fcf9a}
@@ -297,7 +297,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793691719052,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793692487551,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
