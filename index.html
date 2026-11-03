@@ -210,14 +210,14 @@
       <div class="chart" id="c-tools"></div>
     </div>
     <div class="card">
-      <h2>工作空间 Top</h2>
-      <div class="sub">会话数最多的目录</div>
-      <div class="chart" id="c-ws"></div>
+      <h2>会话规模 Top</h2>
+      <div class="sub">体积最大的 10 个会话，点击条形可打开详情</div>
+      <div class="chart" id="c-size"></div>
     </div>
     <div class="card">
-      <h2>上下文使用率</h2>
-      <div class="sub">会话占用上下文窗口的比例分布</div>
-      <div class="chart" id="c-ctx"></div>
+      <h2>单会话工具调用分布</h2>
+      <div class="sub">每个会话落在哪个区间</div>
+      <div class="chart" id="c-toolcalls"></div>
     </div>
   </div>
 
@@ -299,7 +299,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793694489322,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793697208388,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -395,10 +395,17 @@ function drawHBar(el, items, color, unit){
     const y = padT + i*rowH, bh = 12;
     const bwv = Math.max(2, bw*(it.value/max));
     s += '<text x="'+(labelW-10)+'" y="'+(y+bh/2+4)+'" text-anchor="end" fill="#9aa4b8" font-size="11">'+esc(String(it.label).slice(0,28))+'</text>';
-    s += '<rect x="'+labelW+'" y="'+y+'" width="'+bwv+'" height="'+bh+'" fill="'+color+'" rx="3"><title>'+esc(it.label)+': '+it.value+'</title></rect>';
-    s += '<text x="'+(labelW+bwv+7)+'" y="'+(y+bh/2+4)+'" fill="#6b7488" font-size="11">'+it.value+(unit||'')+'</text>';
+    s += '<rect x="'+labelW+'" y="'+y+'" width="'+bwv+'" height="'+bh+'" fill="'+color+'" rx="3"'
+      + (it.id ? ' data-id="'+esc(it.id)+'"' : '') + '><title>'
+      + esc(it.tip || (it.label + ': ' + it.value)) + '</title></rect>';
+    s += '<text x="'+(labelW+bwv+7)+'" y="'+(y+bh/2+4)+'" fill="#6b7488" font-size="11">'
+      + esc(it.text != null ? it.text : it.value + (unit||'')) + '</text>';
   });
   s += '</svg>'; el.innerHTML = s;
+  if(items.some(i=>i.id)) el.querySelectorAll('rect[data-id]').forEach(r=>{
+    r.style.cursor = 'pointer';
+    r.onclick = ()=>{ const id = r.getAttribute('data-id'); if(id) openDrawer(id); };
+  });
 }
 
 /* ---------- context histogram ---------- */
@@ -420,7 +427,7 @@ function drawCtx(el, buckets){
 
 /* ---------- aggregate (recomputed whenever the session set changes) ---------- */
 const topArr = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value}));
-let days = [], hours = [], modelCount = {}, toolCount = {}, wsCount = {}, ctxBuckets = [], ctxKnown = 0;
+let days = [], hours = [], modelCount = {}, toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [];
 function compute(){
   const dayMap = new Map();
   S.forEach(s=>{
@@ -440,14 +447,26 @@ function compute(){
     (s.tools||[]).forEach(([n,c])=>{ toolCount[n]=(toolCount[n]||0)+c; });
   });
 
-  ctxBuckets = ['0-20','20-40','40-60','60-80','80-100'].map(label=>({label,value:0}));
-  ctxKnown = 0;
+  // WorkBuddy gives every session its own dated directory, so "top workspace"
+  // degenerates into a wall of ties at 1; the size ranking says far more, and
+  // the bars double as a way into the session itself
+  sizeTop = S.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0)).slice(0,10).map(s=>({
+    label: s.title || s.id.slice(0, 8),
+    value: s.bytes || 0,
+    text: fmtBytes(s.bytes || 0),
+    id: s.id,
+    tip: (s.title || '(无标题)') + ' · ' + fmtBytes(s.bytes || 0) + ' · ' + (s.lines || 0)
+      + ' 行 · ' + (s.toolCalls || 0) + ' 次工具调用',
+  }));
+
+  // context usage lives in workbuddy.db, which the browser never reads, so the
+  // old breakdown was empty here; tool calls per session is always computable
+  const tb = [['0',0],['1-10',0],['11-30',0],['31-80',0],['81-200',0],['200+',0]];
   S.forEach(s=>{
-    if(s.ctxUsed==null||!s.ctxSize) return;
-    ctxKnown++;
-    const p = Math.min(99, Math.round(s.ctxUsed/s.ctxSize*100));
-    ctxBuckets[Math.min(4, Math.floor(p/20))].value++;
+    const n = s.toolCalls || 0;
+    tb[n === 0 ? 0 : n <= 10 ? 1 : n <= 30 ? 2 : n <= 80 ? 3 : n <= 200 ? 4 : 5][1]++;
   });
+  toolBuckets = tb.map(([label, value])=>({label, value}));
 }
 
 /* ---------- KPI ---------- */
@@ -474,8 +493,9 @@ function renderMeta(){
     : (S.length ? ('已载入 '+S.length+' 个会话') : '尚未载入数据'))
     + (src.dbOk || src.browser || DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>');
   $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。'
-    + (ctxKnown ? ('上下文使用率仅覆盖有用量记录的 '+ctxKnown+' 个会话。')
-       : '上下文使用率需要 workbuddy.db，浏览器模式不读取数据库。');
+    + (DATA.deploy || (src && src.browser)
+      ? ' 浏览器模式不读取 workbuddy.db，会话状态、上下文窗口等只存在于数据库的字段显示为「—」。'
+      : '');
 }
 
 /* ---------- charts ---------- */
@@ -484,8 +504,8 @@ function renderCharts(){
   drawHours($('c-hours'), hours);
   drawHBar($('c-models'), topArr(modelCount), C.blue);
   drawHBar($('c-tools'), topArr(toolCount), C.teal);
-  drawHBar($('c-ws'), topArr(wsCount), C.violet);
-  drawCtx($('c-ctx'), ctxBuckets);
+  drawHBar($('c-size'), sizeTop, C.violet);
+  drawCtx($('c-toolcalls'), toolBuckets);
 }
 
 /* ---------- filters ---------- */
