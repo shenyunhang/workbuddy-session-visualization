@@ -153,9 +153,11 @@
         <div style="font-size:13px"><b>① 选中数据目录（推荐）</b></div>
         <div class="tiny">选中 <code>~/.workbuddy</code> 这个目录本身，页面会自动找出
           <code>projects/*/*.jsonl</code> 会话记录和 <code>cache/conversation-product-spill/</code>
-          里的系统提示快照。目录很大时浏览器要先枚举文件，可能要等几秒才有动静。</div>
+          里的系统提示快照。整个 <code>~/.workbuddy</code> 往往有几万到十几万个文件，
+          所以只走进这两个子目录，其余一概不碰。</div>
         <div style="margin-top:8px"><button class="btn" id="dirbtn" type="button">选择 WorkBuddy 目录</button></div>
         <input type="file" id="dirpick" webkitdirectory directory multiple hidden>
+        <div class="tiny" id="dirhint" style="margin-top:6px"></div>
       </div>
       <div class="opt">
         <div style="font-size:13px"><b>② 直接拖进来</b></div>
@@ -307,7 +309,7 @@
 </aside>
 
 <script>
-const DATA = {"generatedAt":1793689213569,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
+const DATA = {"generatedAt":1793689813779,"root":"","deploy":true,"serve":false,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]}};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1062,6 +1064,7 @@ function walkEntry(entry, out){
       return;
     }
     if(!entry.isDirectory) return res();
+    if(HUGE_DIRS[entry.name]) return res();   // never walk into these when dropped
     const rd = entry.createReader();
     const kids = [];
     const step = ()=>rd.readEntries(list=>{
@@ -1071,6 +1074,93 @@ function walkEntry(entry, out){
     step();
   });
 }
+/* A WorkBuddy home easily holds 100k+ files (8 GB in one real case), so
+   enumerating the whole tree would hang the tab before parsing even starts.
+   The File System Access API lets us open just the two directories we need. */
+const HUGE_DIRS = {binaries:1, plugins:1, 'skills-marketplace':1, 'connectors-marketplace':1,
+  app:1, logs:1, blobs:1, traces:1, 'shell-snapshots':1, workspace:1, 'file-history':1};
+const SKIP_DIRS = Object.assign({cache:1}, HUGE_DIRS);
+async function subDir(handle, name){
+  try { return await handle.getDirectoryHandle(name); } catch(e){ return null; }
+}
+async function collectFromHandle(root){
+  const jsonl = [], prod = [];
+  const projects = await subDir(root, 'projects');
+  if(projects){
+    for await (const [name, h] of projects.entries()){
+      if(h.kind !== 'directory') continue;
+      for await (const [fn, fh] of h.entries()){
+        if(fh.kind === 'file' && /\.jsonl$/i.test(fn)) jsonl.push({name: fn, dir: name, handle: fh});
+      }
+    }
+  } else {
+    // the user may have picked projects/ itself, or something unexpected
+    for await (const [name, h] of root.entries()){
+      if(h.kind === 'file'){
+        if(/\.jsonl$/i.test(name)) jsonl.push({name, dir: '', handle: h});
+      } else if(h.kind === 'directory' && !SKIP_DIRS[name]){
+        for await (const [fn, fh] of h.entries()){
+          if(fh.kind === 'file' && /\.jsonl$/i.test(fn)) jsonl.push({name: fn, dir: name, handle: fh});
+          if(jsonl.length > 5000) break;
+        }
+      }
+      if(jsonl.length > 5000) break;
+    }
+  }
+  const cache = await subDir(root, 'cache');
+  const spill = cache ? await subDir(cache, 'conversation-product-spill') : null;
+  if(spill){
+    for await (const [fn, fh] of spill.entries()){
+      if(fh.kind === 'file' && /\.json$/i.test(fn)) prod.push({name: fn, handle: fh});
+    }
+  }
+  return {jsonl, prod};
+}
+async function pickDir(){
+  const st = $('filestatus');
+  if(!window.showDirectoryPicker){
+    // Firefox / Safari: fall back to the directory input, which does enumerate
+    // everything, so warn first instead of looking broken
+    st.innerHTML = '当前浏览器不支持目录选择器（建议改用 Chrome / Edge）。即将打开文件夹选择，'
+      +'请<b>直接选中 projects 目录</b>而不是整个 .workbuddy —— 后者有十几万个文件，会卡住。';
+    if($('dirpick').click) $('dirpick').click();
+    return;
+  }
+  st.textContent = '请在弹出的对话框里选中 ~/.workbuddy 目录 …';
+  let root;
+  try { root = await window.showDirectoryPicker({id: 'wbviz', mode: 'read'}); }
+  catch(err){
+    st.innerHTML = err && err.name === 'AbortError' ? '已取消选择'
+      : '<span style="color:'+C.amber+'">目录选择器不可用：'+esc(err.message)
+        +'。请改用「选择文件」挑 .jsonl，或用 Chrome / Edge 打开本页。</span>';
+    return;
+  }
+  st.textContent = '已选中目录，正在定位 projects …';
+  let got;
+  try { got = await collectFromHandle(root); }
+  catch(err){
+    st.innerHTML = '<span style="color:'+C.amber+'">读取目录失败：'+esc(err.message)+'</span>';
+    return;
+  }
+  if(!got.jsonl.length){
+    st.innerHTML = '<span style="color:'+C.amber+'">这个目录下没有 projects/*/*.jsonl，'
+      +'请确认选中的是 ~/.workbuddy（或它的 projects 目录）。</span>';
+    return;
+  }
+  const files = [];
+  for(const x of got.jsonl){
+    const f = await x.handle.getFile();
+    try { f.__wbPath = 'projects/' + x.dir + '/' + x.name; } catch(e){}
+    files.push(f);
+  }
+  for(const x of got.prod){
+    const f = await x.handle.getFile();
+    try { f.__wbPath = 'cache/conversation-product-spill/' + x.name; } catch(e){}
+    files.push(f);
+  }
+  return startIngest(files);
+}
+
 async function filesFromDrop(dt){
   const out = [];
   if(dt && dt.items && dt.items.length && dt.items[0].webkitGetAsEntry){
@@ -1388,8 +1478,11 @@ if($('apigo')){
   $('apiurl').value = API;
   $('apiurl').addEventListener('keydown', e=>{ if(e.key === 'Enter') doConnect(); });
 }
-$('dirbtn').onclick = ()=>{ if($('dirpick').click) $('dirpick').click(); };
+$('dirbtn').onclick = ()=>{ pickDir(); };
 $('cancelbtn').onclick = ()=>{ ingestRun++; };
+$('dirhint').textContent = window.showDirectoryPicker
+  ? '只读取 projects 与 cache 两个子目录，其余一概不碰'
+  : '当前浏览器不支持目录选择器：请改用 Chrome / Edge，或直接选中 projects 目录';
 $('dirpick').addEventListener('change', e=>{ startIngest(e.target.files); });
 $('filebtn').onclick = ()=>{ if($('filepick').click) $('filepick').click(); };
 $('filepick').addEventListener('change', e=>{ startIngest(e.target.files); });

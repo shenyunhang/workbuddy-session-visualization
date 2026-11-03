@@ -9,8 +9,10 @@
 
 ## 使用方式：选中 ~/.workbuddy 目录即可
 
-1. 打开页面，点「**选择 WorkBuddy 目录**」，选中 `~/.workbuddy` 这个目录本身
+1. 用 **Chrome / Edge** 打开页面，点「**选择 WorkBuddy 目录**」，选中 `~/.workbuddy` 这个目录本身
    （Windows 上是 `C:\Users\<你>\.workbuddy`）；也可以直接把目录或 `.jsonl` 文件拖进虚线框。
+   目录选择器只走进 `projects/` 和 `cache/conversation-product-spill/` 两个子目录 —— 整个
+   `~/.workbuddy` 常常有十几万个文件、好几个 GB，全量枚举会让标签页在解析开始前就卡死。
 2. 页面在浏览器里完成全部解析：
    - `projects/<workspace>/<session>.jsonl` → 会话记录、事件流、工具与模型统计
    - `cache/conversation-product-spill/*.json` → 系统提示、agent 指令、工具说明
