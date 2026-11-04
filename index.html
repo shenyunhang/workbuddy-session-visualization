@@ -302,7 +302,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793778095128};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793780061450};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -875,6 +875,13 @@ function workspaceLabel(cwd){
   const p = String(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
   return p.split('/').pop() || '';
 }
+/* The first parse already walks every line to build the statistics; the cap
+   only stops it from emitting events. Keep the split lines plus a lightweight
+   list of the records that were held back, so "parse more" can emit the next
+   batch without re-reading or re-scanning the file. WeakMap keys are session
+   objects, so a reload drops the cache along with the old session list. */
+const PARSE_CACHE = new WeakMap();
+const CACHE_MAX_BYTES = 256 * 1048576;   // cap the total text kept alive for resumes
 function jsStat(){
   return {turnsUser:0, turnsAssistant:0, toolCalls:0, toolErrors:0, reasoning:0,
     toolCounter:{}, models:{}, firstTs:null, lastTs:null, firstPrompt:'', events:[], rawChars:0,
@@ -883,7 +890,7 @@ function jsStat(){
     sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
     skipCore:0, skipAux:0, maxCore:JS_MAX_EVENTS, maxAux:JS_MAX_AUX, peakTokens:0,
     lines:0, badLines:0, title:'', titleTs:null, cwd:'',
-    seq:0, lastSeenTs:null, dropped:0};
+    lineIdx:0, curLine:0, lastSeenTs:null, dropped:0, pending:[]};
 }
 /* resuming a parse: skip what is already on screen, then keep up to max more */
 function jsApplyOpts(st, opts){
@@ -913,19 +920,10 @@ const RE_J = {
 const HEAD_CHARS = 1500;
 const NAME_CHARS = 12000;
 
-function jsEvent(st, kind, ts, line, budget){
-  st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
-  // seq is the record's position in the file. It survives a re-parse of the
-  // same file, so it is a stable identity for de-duplication and a stable
-  // tie-breaker for records that carry no usable timestamp.
-  const seq = st.seq++;
-  if(ts != null) st.lastSeenTs = ts;
-  const core = !!CORE_KINDS_JS[kind];
-  const seen = core ? st.nCore : st.nAux;
-  if(core) st.nCore++; else st.nAux++;
-  const skip = core ? st.skipCore : st.skipAux;
-  if(seen < skip) return;                 // already shown in an earlier batch
-  if(seen - skip >= (core ? st.maxCore : st.maxAux)){ st.dropped++; return; }
+/* Build one event from an already classified record. Shared by the initial
+   parse and by the cache-backed resume, so a resumed record is byte-identical
+   to one emitted during the first pass. */
+function jsMakeEvent(st, p, line, budget){
   // budget 0 = keep every record whole, including the per-record cap
   const take = budget === 0 ? line.length
     : (() => {
@@ -934,20 +932,37 @@ function jsEvent(st, kind, ts, line, budget){
         return want <= JS_RAW_PREVIEW ? want
           : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
       })();
-  // Records without a timestamp used to be dropped by a filter(e => e.t),
-  // which made records != events and left "parse more" permanently claiming
-  // there was data left. Keep them, inherit the preceding time, and say so.
-  const ev = {t: ts != null ? ts : (st.lastSeenTs != null ? st.lastSeenTs : 0),
-              k: kind, size: line.length, raw: line.slice(0, take), seq: seq};
-  if(ts == null) ev.noTs = true;
+  const ev = {t: p.t, k: p.k, size: line.length, raw: line.slice(0, take), seq: p.i};
+  if(p.noTs) ev.noTs = true;
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
   if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
-  st.events.push(ev);
+  return ev;
+}
+function jsEvent(st, kind, ts, line, budget){
+  st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
+  if(ts != null) st.lastSeenTs = ts;
+  // seq is the line's index in the file: stable across re-parses, so it works
+  // both as a de-duplication identity and as a tie-breaker for records with no
+  // usable timestamp (which inherit the preceding time and are flagged noTs).
+  const p = {i: st.curLine, k: kind,
+    t: ts != null ? ts : (st.lastSeenTs != null ? st.lastSeenTs : 0),
+    noTs: ts == null};
+  const core = !!CORE_KINDS_JS[kind];
+  const seen = core ? st.nCore : st.nAux;
+  if(core) st.nCore++; else st.nAux++;
+  const skip = core ? st.skipCore : st.skipAux;
+  if(seen < skip) return;                 // already shown in an earlier batch
+  if(seen - skip >= (core ? st.maxCore : st.maxAux)){
+    st.dropped++; st.pending.push(p); return;
+  }
+  st.events.push(jsMakeEvent(st, p, line, budget));
 }
 
 function jsLine(st, raw, budget){
+  const lineIdx = st.lineIdx++;
   const line = raw.trim();
   if(!line) return;
+  st.curLine = lineIdx;
   st.lines++;
   const head = line.length > HEAD_CHARS ? line.slice(0, HEAD_CHARS) : line;
   const tm = RE_J.type.exec(head);
@@ -1139,17 +1154,27 @@ function jsFinish(st, id, wsFallback, size){
   };
 }
 
-function jsParse(text, id, wsFallback, size, budget, opts){
+/* cacheOut, when supplied, receives the split lines and the held-back record
+   descriptors by reference. Callers that never need to resume simply omit it. */
+function writeParseCache(cacheOut, st, lines, budget){
+  if(!cacheOut) return;
+  cacheOut.lines = lines;
+  cacheOut.pending = st.pending;
+  cacheOut.rawChars = st.rawChars;
+  cacheOut.budget = budget;
+}
+function jsParse(text, id, wsFallback, size, budget, opts, cacheOut){
   const st = jsApplyOpts(jsStat(), opts);
   const lines = String(text).split(/\r?\n/);
   for(let i = 0; i < lines.length; i++) jsLine(st, lines[i], budget);
+  writeParseCache(cacheOut, st, lines, budget);
   return jsFinish(st, id, wsFallback, size);
 }
 
 /* Same parse, but sliced: a single session file reaches tens of MB, and doing
    that in one synchronous pass froze the tab for seconds. Yielding between
    slices keeps the progress bar moving and the page responsive. */
-async function jsParseAsync(text, id, wsFallback, size, budget, opts, onSlice){
+async function jsParseAsync(text, id, wsFallback, size, budget, opts, onSlice, cacheOut){
   const st = jsApplyOpts(jsStat(), opts);
   const lines = String(text).split(/\r?\n/);
   const SLICE = 15000;
@@ -1159,6 +1184,7 @@ async function jsParseAsync(text, id, wsFallback, size, budget, opts, onSlice){
     if(onSlice) onSlice(end, lines.length);
     if(end < lines.length) await new Promise(r => setTimeout(r, 0));
   }
+  writeParseCache(cacheOut, st, lines, budget);
   return jsFinish(st, id, wsFallback, size);
 }
 
@@ -1494,7 +1520,7 @@ async function ingestFiles(files){
   DATA.deploy = false;
   DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
     indexedSessions:0, workspaces:0, jsonlFiles:jsonl.length, scanned:0};
-  let maskReady = false, bytes = 0, failed = 0, skipped = 0, sub = '';
+  let maskReady = false, bytes = 0, failed = 0, skipped = 0, sub = '', cachedBytes = 0;
   st.innerHTML = '找到 ' + jsonl.length + ' 个会话文件，开始解析最新的 ' + use.length + ' 个 …';
   $('prog').style.display = ''; $('progtxt').style.display = ''; $('cancelbtn').style.display = '';
   $('progbar').style.width = '0%';
@@ -1517,16 +1543,22 @@ async function ingestFiles(files){
     try { txt = await readText(f); } catch(e){ failed++; continue; }
     try {
       const name = String(f.name || '').replace(/\.jsonl$/i, '');
+      const cache = {};
       const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, budget, null,
         (done, total)=>{
           // a single file can be tens of MB; show its own progress while it runs
           sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
           tick(i);
-        });
+        }, cache);
       sub = '';
       bytes += txt.length;
-      // keep the handle so the drawer can parse past the event cap on demand
+      // keep the handle for the no-cache fallback; only sessions that actually
+      // hit the event cap pay the memory cost of holding the split lines
       try { s.__file = f; } catch(e){}
+      if(cache.pending && cache.pending.length
+         && cachedBytes + txt.length <= CACHE_MAX_BYTES){
+        PARSE_CACHE.set(s, cache); cachedBytes += txt.length;
+      }
       if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
       if(maskReady) maskSession(s);
       S.push(s);
@@ -1617,23 +1649,56 @@ $('d-body').onclick = foldHandler($('d-body'));
 function closeDrawer(){ $('drawer').classList.remove('on'); $('mask').classList.remove('on'); }
 
 /* The first pass stops at JS_MAX_EVENTS so a 23k-record session does not blow
-   up memory. The rest is still on disk, so re-read the file and resume the
-   parse where it stopped, skipping what is already on screen. */
+   up memory, but it did already walk every line, so all the statistics are
+   complete. Emit the next batch straight from the cached lines: no file read,
+   no split, no re-scan of the records already accounted for. */
+function cachedBatch(cache, step){
+  const take = [], keep = [];
+  let core = 0, aux = 0;
+  for(const p of cache.pending){
+    const isCore = !!CORE_KINDS_JS[p.k];
+    if(isCore ? core < step : aux < step){ take.push(p); if(isCore) core++; else aux++; }
+    else keep.push(p);
+  }
+  cache.pending = keep;
+  // read the live control, matching the fallback path's behaviour if the
+  // reader changed the raw-JSON budget after the first parse
+  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+  const st = {rawChars: cache.rawChars};
+  const events = take.map(p=>{
+    const line = String(cache.lines[p.i] == null ? '' : cache.lines[p.i]).trim();
+    const ev = jsMakeEvent(st, p, line, budget);
+    // cached lines are the unmasked source text; pass one masked its events
+    ev.raw = maskPath(ev.raw);
+    return ev;
+  });
+  cache.rawChars = st.rawChars;
+  return {events: events, dropped: keep.length};
+}
 async function parseMoreEvents(btn){
   const s = cur;
   if(!s || !s.__file) return;
-  btn.disabled = true; btn.textContent = '正在从文件解析…';
-  let txt = null;
-  try { txt = await readText(s.__file); }
-  catch(err){ btn.textContent = '读取失败：' + err.message; return; }
-  let core = 0, aux = 0;
-  (s.events||[]).forEach(e=>{ if(CORE_KINDS_JS[e.k]) core++; else aux++; });
-  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+  btn.disabled = true;
+  const cache = PARSE_CACHE.get(s);
+  const usedCache = !!(cache && cache.lines && cache.pending);
   let d = null;
-  try {
-    d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
-      {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
-  } catch(err){ btn.textContent = '解析失败：' + err.message; return; }
+  if(usedCache){
+    btn.textContent = '正在从缓存读取…';
+    d = cachedBatch(cache, EV_STEP);
+  } else {
+    // a payload loaded from an older snapshot has no cache: pay the old cost
+    btn.textContent = '正在从文件解析…';
+    let txt = null;
+    try { txt = await readText(s.__file); }
+    catch(err){ btn.textContent = '读取失败：' + err.message; return; }
+    let core = 0, aux = 0;
+    (s.events||[]).forEach(e=>{ if(CORE_KINDS_JS[e.k]) core++; else aux++; });
+    const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+    try {
+      d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
+        {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
+    } catch(err){ btn.textContent = '解析失败：' + err.message; return; }
+  }
   // seq is the file-relative record number and is stable across re-parses.
   // t|kind|size alone used to merge two distinct records that happened to share
   // a millisecond, a kind and a line length. Keep the old key too, so payloads
@@ -1651,7 +1716,8 @@ async function parseMoreEvents(btn){
   }
   s.events.sort((a,b)=>a.t-b.t || (a.seq||0)-(b.seq||0));
   if(d.records) s.records = Math.max(s.records||0, d.records);
-  // this pass reports exactly how many records are still beyond its own cap
+  if(usedCache) s.rawChars = cache.rawChars;
+  // exactly how many records are still beyond the cap
   if(d.dropped != null) s.dropped = d.dropped;
   evShown += Math.max(EV_STEP, added);
   openDrawer(s.id);
