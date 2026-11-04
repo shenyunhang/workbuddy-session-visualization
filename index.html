@@ -302,7 +302,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793780061450};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793780937445};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -313,13 +313,19 @@ const fmtDur = ms => { if(!ms||ms<0) return '—'; let s = Math.round(ms/1000);
   if (s<60) return s+'s'; let m=Math.floor(s/60); if(m<60) return m+'m'; let h=Math.floor(m/60);
   return h+'h'+(m%60?(' '+ (m%60)+'m'):''); };
 const fmtBytes = b => b>1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
-const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ESC_MAP[c]);
 const fmtSize = n => n==null ? '—' : (n>1024 ? (n/1024).toFixed(1)+'K 字符' : n+' 字符');
 const RAW_PREVIEW = 240;
-function jsonHl(raw){
+/* A multi-MB tool result can contain tens of thousands of JSON tokens. Giving
+   each its own <span> freezes the tab, so colour only a bounded prefix and a
+   bounded number of tokens; the rest is still emitted, as escaped plain text,
+   so the full record stays visible and nothing is truncated. */
+const HL_CHARS = 65536, HL_TOKENS = 1200;
+function hlTokens(raw){
   const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?)|(true|false|null)/g;
-  let out = '', last = 0, m;
-  while((m = re.exec(raw)) !== null){
+  let out = '', last = 0, m, n = 0;
+  while(n < HL_TOKENS && (m = re.exec(raw)) !== null){
     out += esc(raw.slice(last, m.index));
     if(m[1] !== undefined){
       const s = esc(m[1]);
@@ -330,8 +336,13 @@ function jsonHl(raw){
       out += '<span class="jb">'+esc(m[4])+'</span>';
     }
     last = m.index + m[0].length;
+    n++;
   }
   return out + esc(raw.slice(last));
+}
+function jsonHl(raw){
+  return raw.length <= HL_CHARS ? hlTokens(raw)
+    : hlTokens(raw.slice(0, HL_CHARS)) + esc(raw.slice(HL_CHARS));
 }
 const C = {blue:'#5b8cff',teal:'#2dd4bf',amber:'#f5a524',red:'#f2555a',violet:'#a78bfa',gray:'#64748b',
   green:'#639922',pink:'#d4537e'};
@@ -599,21 +610,22 @@ document.querySelectorAll('th[data-sort]').forEach(th=>{
 $('more').onclick = ()=>{ page++; renderList(false); };
 
 /* ---------- drawer ---------- */
-let cur = null;   // session currently shown in the drawer
-let hiddenKinds = new Set();   // event kinds filtered out of the drawer timeline
-const EV_STEP = 100;           // events rendered per page, and records pulled per re-parse
+let cur = null;              // session currently shown in the drawer
+let hiddenKinds = new Set(); // event kinds the reader filtered out
+let expandedKeys = new Set(); // stable ids of expanded raw records in this session
+const EV_STEP = 100;         // events rendered per page, and records pulled per re-parse
 let evShown = EV_STEP, evCurId = null;
-function openDrawer(id){
-  const s = S.find(x=>x.id===id); if(!s) return;
-  cur = s;
-  if(evCurId !== id){ evShown = EV_STEP; evCurId = id; }
-  $('d-title').innerHTML = esc(s.title)
-    + (s.titleSrc === 'prompt'
-      ? ' <span class="tag a" title="该文件里没有 ai-title 记录，标题取自首条提问">取首条提问</span>'
-      : (s.titleSrc === 'none'
-        ? ' <span class="tag" title="既无 ai-title 也无用户消息">无标题</span>' : ''));
-  $('d-sub').innerHTML = esc(s.ws)+' · '+esc(s.model||'未知')+' · '+fmtTime(s.created||0)
-    +(s.duration?' · 持续 '+fmtDur(s.duration):'');
+/* Resuming a parse inserts records and re-sorts the events, so array indexes
+   are not stable. seq is the file-relative line number; fall back to the old
+   descriptor for payloads produced before seq existed. */
+function evKey(e){
+  if(!e) return 'k||';
+  return e.seq != null ? 's'+e.seq : 'k'+e.t+'|'+e.k+'|'+e.size;
+}
+
+/* Static details at the top of the drawer: metadata, first question, tool
+   histogram and the observable prompt-context configuration. */
+function drawerMetaHtml(s){
   const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
   const meta = [
     ['状态', s.status], ['会话 ID', s.id], ['工作目录', s.cwd||'—'],
@@ -655,46 +667,58 @@ function openDrawer(id){
     html += '<div class="tiny" style="margin:8px 0 18px">系统提示原文来自 ~/.workbuddy/cache/conversation-product-spill '
       +'的产品配置快照，完整内容见「系统提示与工具」标签页；以上为决定其组装方式的可观测配置。</div>';
   }
+  return html;
+}
 
+/* One event row. Deriving expansion and visibility from state means a full
+   repaint (paging, resuming a parse) restores exactly what was on screen. */
+function eventHtml(e, i){
+  const raw = e.raw || '';
+  const tag = esc(KIND_LABEL[e.k] || e.k);
+  const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
+  const expandable = raw.length > RAW_PREVIEW && e.cut !== 2;
+  const expanded = expandable && expandedKeys.has(evKey(e));
+  const body = raw
+    ? '<pre class="raw'+(expanded?' open':'')+'" data-i="'+i+'"'+(expanded?' data-full="1"':'')+'>'
+      + (expanded ? jsonHl(raw) : esc(raw.slice(0, RAW_PREVIEW)) + (raw.length>RAW_PREVIEW?' …':''))
+      + '</pre>'
+      + (expandable
+          ? '<div class="more">'+(expanded?'收起 ▴':'展开完整 JSON ▾')+'</div>'
+          : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
+      + (expanded && raw.length > HL_CHARS
+          ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
+            +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
+    : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>';
+  const hidden = hiddenKinds.has(e.k) ? ' style="display:none"' : '';
+  return '<div class="ev" data-k="'+esc(e.k)+'"'+hidden+'><div class="ts">'
+    +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
+    +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
+    +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
+    +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
+    + body + '</div></div>';
+}
+
+function drawerEventsHtml(s){
   const kinds = s.typeCounts || [];
-  const cutCount = (s.events||[]).filter(e=>e.cut).length;
-  const evCount = (s.events||[]).length;
-  const evAll = (s.events||[]);
+  const evAll = s.events || [];
+  const cutCount = evAll.filter(e=>e.cut).length;
+  const evCount = evAll.length;
   const shown = Math.min(evCount, evShown);
-  html += '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
+  let html = '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
     +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
   if(kinds.length){
-    hiddenKinds = new Set();
     html += '<div class="kinds">'+kinds.map(([k,c])=>
-      '<span class="tag" data-kind="'+esc(k)+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
+      '<span class="tag'+(hiddenKinds.has(k)?' off':'')+'" data-kind="'+esc(k)+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
       +esc(KIND_LABEL[k]||k)+' '+c+'</span>').join('')+'</div>';
   }
   if(cutCount){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += evAll.slice(0, shown).map((e,i)=>{
-    const raw = e.raw || '';
-    const tag = esc(KIND_LABEL[e.k] || e.k);
-    const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
-    return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'
-      +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
-      +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
-      +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
-      +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
-      + (raw
-        ? '<pre class="raw" data-i="'+i+'">'+esc(raw.slice(0, RAW_PREVIEW))+(raw.length>RAW_PREVIEW?' …':'')+'</pre>'
-          + ((raw.length>RAW_PREVIEW && e.cut!==2)
-            ? '<div class="more">展开完整 JSON ▾</div>'
-            : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
-        : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>')
-      +'</div></div>';
-  }).join('') || '<div class="empty">该会话没有可展示的事件</div>';
-  // past the cap the records are still on disk: offer to render the next page,
-  // and to pull more out of the file when the parse stopped early
-  // only the records dropped by the per-session cap are still on disk. Using
-  // records - events over-counted records without a timestamp, so the button
-  // kept offering a batch that could never be produced.
+  html += evAll.slice(0, shown).map((e,i)=>eventHtml(e,i)).join('')
+    || '<div class="empty">该会话没有可展示的事件</div>';
+  // only the records dropped by the per-session cap are still on disk; using
+  // records - events over-counted records without a timestamp
   const rest = s.dropped != null ? s.dropped : Math.max(0, (s.records || evCount) - evCount);
   if(evCount > shown){
     html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
@@ -710,8 +734,22 @@ function openDrawer(id){
       +'</div>';
   }
   html += '<div class="tiny" style="margin-top:16px">原始记录文件</div><div class="pathbox">'+esc(s.file)+'</div>';
-  $('d-body').innerHTML = html;
+  return html;
+}
 
+function openDrawer(id){
+  const s = S.find(x=>x.id===id); if(!s) return;
+  // switching sessions is the only thing that should clear the reader's view
+  if(cur !== s){ expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP; }
+  cur = s; evCurId = id;
+  $('d-title').innerHTML = esc(s.title)
+    + (s.titleSrc === 'prompt'
+      ? ' <span class="tag a" title="该文件里没有 ai-title 记录，标题取自首条提问">取首条提问</span>'
+      : (s.titleSrc === 'none'
+        ? ' <span class="tag" title="既无 ai-title 也无用户消息">无标题</span>' : ''));
+  $('d-sub').innerHTML = esc(s.ws)+' · '+esc(s.model||'未知')+' · '+fmtTime(s.created||0)
+    +(s.duration?' · 持续 '+fmtDur(s.duration):'');
+  $('d-body').innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
   $('drawer').classList.add('on'); $('mask').classList.add('on');
 }
 
@@ -1636,6 +1674,9 @@ function foldHandler(rootEl){
       const idx = +pre.dataset.i;
       const finish = ()=>{
         const open = pre.classList.toggle('open');
+        // remember it so a full repaint (paging / resuming) restores the row
+        const key = evKey(cur.events[idx]);
+        if(open) expandedKeys.add(key); else expandedKeys.delete(key);
         if(more) more.textContent = open ? '收起 ▴' : '展开完整 JSON ▾';
       };
       if(pre.dataset.full){ finish(); return; }
