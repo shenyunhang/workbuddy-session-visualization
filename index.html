@@ -32,8 +32,10 @@
   .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
   input[type=text],select{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);
     border-radius:8px;padding:7px 10px;font-size:13px;outline:none;font-family:inherit}
-  input[type=text]{min-width:240px}
+  input[type=text]{min-width:240px;max-width:100%}
   input[type=text]:focus,select:focus{border-color:var(--blue)}
+  /* one visible ring for every keyboard-operable control */
+  :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   .chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt2);cursor:pointer;user-select:none}
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt2);border-radius:8px;
     padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
@@ -45,7 +47,7 @@
   th.on{color:var(--blue)}
   td{padding:9px 10px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
   tr.row{cursor:pointer}
-  tr.row:hover td{background:var(--panel2)}
+  tr.row:hover td,tr.row:focus-visible td{background:var(--panel2)}
   .tmax{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--txt2)}
   .tag.b{color:var(--blue);border-color:#2c3f6b}
@@ -62,8 +64,12 @@
     border-left:1px solid var(--line2);transform:translateX(100%);transition:transform .22s ease;z-index:50;
     display:flex;flex-direction:column}
   .drawer.on{transform:none}
-  .dhead{padding:18px 20px 14px;border-bottom:1px solid var(--line)}
-  .dhead .t{font-size:16px;font-weight:600;margin-bottom:6px}
+  .dhead{position:relative;padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+  .dhead .t{font-size:16px;font-weight:600;margin-bottom:6px;padding-right:42px}
+  .dclose{position:absolute;top:14px;right:16px;width:30px;height:30px;line-height:1;
+    background:var(--panel2);border:1px solid var(--line2);border-radius:8px;
+    color:var(--txt2);cursor:pointer;font-family:inherit;font-size:16px}
+  .dclose:hover{border-color:var(--blue);color:var(--txt)}
   .dbody{overflow:auto;padding:16px 20px 40px;flex:1}
   .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 14px;margin-bottom:18px}
   .meta div{font-size:12px;color:var(--txt2)}
@@ -243,18 +249,19 @@
       <label class="chk"><input type="checkbox" id="f-err"> 只看有工具报错</label>
       <label class="chk"><input type="checkbox" id="f-agent"> 只看有工具调用</label>
       <label class="chk"><input type="checkbox" id="f-think"> 只看有思考内容</label>
+      <label class="chk" title="勾选后搜索词也会匹配事件流里的原始 JSON，较慢"><input type="checkbox" id="f-raw"> 含事件原文</label>
       <span class="tiny" id="count"></span>
     </div>
     <div style="overflow:auto">
       <table>
         <thead><tr>
-          <th data-sort="title">标题</th>
-          <th data-sort="ws">工作空间</th>
-          <th data-sort="model">模型</th>
-          <th data-sort="updated">更新时间</th>
-          <th data-sort="turns">轮数</th>
-          <th data-sort="tools">工具</th>
-          <th data-sort="ctx">上下文</th>
+          <th data-sort="title" tabindex="0">标题</th>
+          <th data-sort="ws" tabindex="0">工作空间</th>
+          <th data-sort="model" tabindex="0">模型</th>
+          <th data-sort="updated" tabindex="0">更新时间</th>
+          <th data-sort="turns" tabindex="0">轮数</th>
+          <th data-sort="tools" tabindex="0">工具</th>
+          <th data-sort="ctx" tabindex="0">上下文</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -293,16 +300,17 @@
 </div>
 
 <div class="mask" id="mask"></div>
-<aside class="drawer" id="drawer">
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" tabindex="-1">
   <div class="dhead">
     <div class="t" id="d-title"></div>
     <div class="tiny" id="d-sub"></div>
+    <button type="button" class="dclose" id="d-close" aria-label="关闭会话详情">✕</button>
   </div>
   <div class="dbody" id="d-body"></div>
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793780937445};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793790126791};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -541,8 +549,38 @@ function renderFilters(){
 }
 
 let sortKey = 'updated', page = 0, PAGE = 40;
+/* Searching raw event payloads is opt-in: with budget 0 a single session can
+   hold megabytes of JSON. Cache the answer per (session, query), debounce the
+   input, require a minimum term length, and bound how much text one session
+   may contribute so a pathological file cannot freeze the tab. */
+const RAW_SEARCH_CACHE = new WeakMap();
+const RAW_SCAN_LIMIT = 16 * 1048576, RAW_QUERY_MIN = 2;
+let rawScanCapped = false;
+function rawMatch(s, q){
+  let cache = RAW_SEARCH_CACHE.get(s);
+  if(!cache){ cache = new Map(); RAW_SEARCH_CACHE.set(s, cache); }
+  const cached = cache.get(q);
+  if(cached){
+    // a cached miss that hit the scan cap must keep showing the same warning
+    if(cached.capped) rawScanCapped = true;
+    return cached.hit;
+  }
+  let scanned = 0, hit = false, capped = false;
+  for(const e of (s.events||[])){
+    const raw = e && e.raw;
+    if(!raw) continue;
+    scanned += raw.length;
+    if(scanned > RAW_SCAN_LIMIT){ capped = true; rawScanCapped = true; break; }
+    if(raw.toLowerCase().includes(q)){ hit = true; break; }
+  }
+  if(cache.size > 12) cache.clear();
+  cache.set(q, {hit: hit, capped: capped});
+  return hit;
+}
 function filtered(){
   const q = $('q').value.trim().toLowerCase();
+  const deep = !!($('f-raw') && $('f-raw').checked) && q.length >= RAW_QUERY_MIN;
+  rawScanCapped = false;
   const ws = $('f-ws').value, mdl = $('f-model').value, mde = $('f-mode').value,
         errOnly = $('f-err').checked, agentOnly = $('f-agent').checked, thinkOnly = $('f-think').checked;
   return S.filter(s=>{
@@ -554,7 +592,8 @@ function filtered(){
     if(thinkOnly && !(s.thinking && s.thinking.length)) return false;
     if(q){
       const hay = ((s.title||'')+' '+(s.prompt||'')+' '+(s.cwd||'')+' '+(s.model||'')).toLowerCase();
-      if(!hay.includes(q)) return false;
+      // metadata is cheap, so only pay for the raw scan when it did not match
+      if(!hay.includes(q) && !(deep && rawMatch(s, q))) return false;
     }
     return true;
   }).sort((a,b)=>{
@@ -575,7 +614,9 @@ function filtered(){
 function setSort(k){
   sortKey = k || 'updated';
   document.querySelectorAll('th[data-sort]').forEach(o=>{
-    o.classList.toggle('on', o.dataset.sort === sortKey);
+    const on = o.dataset.sort === sortKey;
+    o.classList.toggle('on', on);
+    if(o.setAttribute) o.setAttribute('aria-sort', on ? 'descending' : 'none');
   });
   const sel = $('f-sort');
   if(sel) sel.value = sortKey;
@@ -583,11 +624,13 @@ function setSort(k){
 function renderList(reset){
   if(reset) page = 0;
   const list = filtered();
-  $('count').textContent = '共 '+list.length+' 个会话';
+  $('count').textContent = '共 '+list.length+' 个会话'
+    + (rawScanCapped ? ' · 原文搜索已达扫描上限' : '');
   const slice = list.slice(0, (page+1)*PAGE);
   $('rows').innerHTML = slice.map(s=>{
     const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
-    return '<tr class="row" data-id="'+esc(s.id)+'">'
+    return '<tr class="row" data-id="'+esc(s.id)+'" tabindex="0" role="button"'
+      +' aria-label="查看会话 '+esc(s.title)+'">'
       +'<td class="tmax" title="'+esc(s.prompt)+'">'+esc(s.title)+'</td>'
       +'<td class="tmax muted">'+esc(s.ws)+'</td>'
       +'<td><span class="tag b">'+esc(s.model||'未知')+'</span></td>'
@@ -600,12 +643,32 @@ function renderList(reset){
   }).join('') || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
   $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
 }
+function isActivateKey(e){
+  return e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar';
+}
 document.querySelectorAll('th[data-sort]').forEach(th=>{
-  th.onclick = ()=>{ setSort(th.dataset.sort); renderList(true); };
+  const activate = ()=>{ setSort(th.dataset.sort); renderList(true); };
+  th.onclick = activate;
+  th.onkeydown = e=>{ if(isActivateKey(e)){ e.preventDefault(); activate(); } };
 });
-['q','f-ws','f-model','f-mode','f-err','f-agent','f-think','f-sort'].forEach(id=>{
+['f-ws','f-model','f-mode','f-err','f-agent','f-think','f-sort','f-raw'].forEach(id=>{
   const el = $(id);
-  el.addEventListener(id==='q'?'input':'change', ()=>{ if(id==='f-sort') setSort(el.value); renderList(true); });
+  el.addEventListener('change', ()=>{ if(id==='f-sort') setSort(el.value); renderList(true); });
+});
+let searchTimer = null;
+$('q').addEventListener('input', ()=>{
+  // scanning raw payloads is expensive, so wait until the reader stops typing
+  if($('f-raw') && $('f-raw').checked){
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(()=>renderList(true), 180);
+  } else renderList(true);
+});
+$('rows').addEventListener('keydown', e=>{
+  if(!isActivateKey(e)) return;
+  const tr = e.target.closest && e.target.closest('tr.row');
+  if(!tr) return;
+  e.preventDefault();
+  openDrawer(tr.dataset.id);
 });
 $('more').onclick = ()=>{ page++; renderList(false); };
 
@@ -683,7 +746,8 @@ function eventHtml(e, i){
       + (expanded ? jsonHl(raw) : esc(raw.slice(0, RAW_PREVIEW)) + (raw.length>RAW_PREVIEW?' …':''))
       + '</pre>'
       + (expandable
-          ? '<div class="more">'+(expanded?'收起 ▴':'展开完整 JSON ▾')+'</div>'
+          ? '<div class="more" tabindex="0" role="button" aria-expanded="'+(expanded?'true':'false')+'">'
+            +(expanded?'收起 ▴':'展开完整 JSON ▾')+'</div>'
           : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
       + (expanded && raw.length > HL_CHARS
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
@@ -708,7 +772,8 @@ function drawerEventsHtml(s){
     +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
   if(kinds.length){
     html += '<div class="kinds">'+kinds.map(([k,c])=>
-      '<span class="tag'+(hiddenKinds.has(k)?' off':'')+'" data-kind="'+esc(k)+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
+      '<span class="tag'+(hiddenKinds.has(k)?' off':'')+'" data-kind="'+esc(k)+'" tabindex="0" role="button"'
+      +' aria-pressed="'+(!hiddenKinds.has(k))+'" style="color:'+colorOf(k)+';border-color:'+colorOf(k)+'55">'
       +esc(KIND_LABEL[k]||k)+' '+c+'</span>').join('')+'</div>';
   }
   if(cutCount){
@@ -751,6 +816,10 @@ function openDrawer(id){
     +(s.duration?' · 持续 '+fmtDur(s.duration):'');
   $('d-body').innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
   $('drawer').classList.add('on'); $('mask').classList.add('on');
+  if(!drawerOpen) drawerOpener = document.activeElement;
+  drawerOpen = true;
+  const box = $('drawer');
+  if(box.focus) box.focus();
 }
 
 /* ---------- privacy: strip the local home path / account name from everything shown ---------- */
@@ -1631,63 +1700,109 @@ async function ingestFiles(files){
     + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
 }
 
-/* shared fold / filter behaviour for both the drawer and the prompt view */
-function foldHandler(rootEl){
-  return function(ev){
-    const chip = ev.target.closest('.kinds .tag');
-    if(chip){
-      const k = chip.dataset.kind;
-      if(hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
-      chip.classList.toggle('off', hiddenKinds.has(k));
-      rootEl.querySelectorAll('.ev').forEach(r=>{
-        r.style.display = hiddenKinds.has(r.dataset.k) ? 'none' : '';
-      });
-      return;
-    }
-    const head = ev.target.closest('.th .hd');
-    if(head){
-      const box = head.parentElement; box.classList.toggle('on');
-      const ar = head.querySelector('.ar');
-      if(ar) ar.textContent = box.classList.contains('on') ? '收起 ▴' : '展开 ▾';
-      return;
-    }
-    const all = ev.target.closest('[data-act="th-all"]');
-    if(all){
-      const expand = all.dataset.state !== 'on';
-      rootEl.querySelectorAll('.th').forEach(b=>{
-        b.classList.toggle('on', expand);
-        const a = b.querySelector('.ar'); if(a) a.textContent = expand ? '收起 ▴' : '展开 ▾';
-      });
-      all.dataset.state = expand ? 'on' : 'off';
-      all.textContent = expand ? '收起全部' : '展开全部';
-      return;
-    }
-    const evMore = ev.target.closest('[data-act="ev-more"]');
-    if(evMore && cur){ evShown += EV_STEP; openDrawer(cur.id); return; }
-    const evParse = ev.target.closest('[data-act="ev-parse"]');
-    if(evParse && cur){ parseMoreEvents(evParse); return; }
-    const hit = ev.target.closest('.raw, .more');
-    if(hit && cur){
-      const row = hit.closest('.ev'); if(!row) return;
-      const pre = row.querySelector('.raw'); if(!pre) return;
-      const more = row.querySelector('.more');
-      const idx = +pre.dataset.i;
-      const finish = ()=>{
-        const open = pre.classList.toggle('open');
-        // remember it so a full repaint (paging / resuming) restores the row
-        const key = evKey(cur.events[idx]);
-        if(open) expandedKeys.add(key); else expandedKeys.delete(key);
-        if(more) more.textContent = open ? '收起 ▴' : '展开完整 JSON ▾';
-      };
-      if(pre.dataset.full){ finish(); return; }
-      const inline = cur.events[idx] && cur.events[idx].raw;
-      if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline); pre.dataset.full = '1'; }
-      finish();
+/* One action per function, so pointer and keyboard activation share exactly
+   the same behaviour. Assigning onkeydown (not addEventListener) also keeps
+   repeated repaints from stacking handlers. */
+function toggleKind(chip, rootEl){
+  const k = chip.dataset.kind;
+  if(hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
+  chip.classList.toggle('off', hiddenKinds.has(k));
+  if(chip.setAttribute) chip.setAttribute('aria-pressed', String(!hiddenKinds.has(k)));
+  rootEl.querySelectorAll('.ev').forEach(r=>{
+    r.style.display = hiddenKinds.has(r.dataset.k) ? 'none' : '';
+  });
+}
+function toggleFold(head){
+  const box = head.parentElement; box.classList.toggle('on');
+  const ar = head.querySelector('.ar');
+  if(ar) ar.textContent = box.classList.contains('on') ? '收起 ▴' : '展开 ▾';
+}
+function toggleAllFolds(all, rootEl){
+  const expand = all.dataset.state !== 'on';
+  rootEl.querySelectorAll('.th').forEach(b=>{
+    b.classList.toggle('on', expand);
+    const a = b.querySelector('.ar'); if(a) a.textContent = expand ? '收起 ▴' : '展开 ▾';
+  });
+  all.dataset.state = expand ? 'on' : 'off';
+  all.textContent = expand ? '收起全部' : '展开全部';
+}
+function toggleRaw(row){
+  if(!cur) return;
+  const pre = row.querySelector('.raw'); if(!pre) return;
+  const more = row.querySelector('.more');
+  const idx = +pre.dataset.i;
+  const finish = ()=>{
+    const open = pre.classList.toggle('open');
+    // remember it so a full repaint (paging / resuming) restores the row
+    const key = evKey(cur.events[idx]);
+    if(open) expandedKeys.add(key); else expandedKeys.delete(key);
+    if(more){
+      more.textContent = open ? '收起 ▴' : '展开完整 JSON ▾';
+      if(more.setAttribute) more.setAttribute('aria-expanded', String(open));
     }
   };
+  if(pre.dataset.full){ finish(); return; }
+  const inline = cur.events[idx] && cur.events[idx].raw;
+  if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline); pre.dataset.full = '1'; }
+  finish();
 }
-$('d-body').onclick = foldHandler($('d-body'));
-function closeDrawer(){ $('drawer').classList.remove('on'); $('mask').classList.remove('on'); }
+function foldAction(rootEl, target){
+  const closest = sel => target && target.closest && target.closest(sel);
+  const chip = closest('.kinds .tag');
+  if(chip){ toggleKind(chip, rootEl); return true; }
+  const head = closest('.th .hd');
+  if(head){ toggleFold(head); return true; }
+  const all = closest('[data-act="th-all"]');
+  if(all){ toggleAllFolds(all, rootEl); return true; }
+  if(cur){
+    if(closest('[data-act="ev-more"]')){ evShown += EV_STEP; openDrawer(cur.id); return true; }
+    const parse = closest('[data-act="ev-parse"]');
+    if(parse){ parseMoreEvents(parse); return true; }
+  }
+  const hit = closest('.raw, .more');
+  if(hit && cur){
+    const row = hit.closest && hit.closest('.ev');
+    if(row) toggleRaw(row);
+    return true;
+  }
+  return false;
+}
+function foldHandler(rootEl){
+  return function(ev){
+    const keyboard = ev.type === 'keydown';
+    if(keyboard && !isActivateKey(ev)) return;
+    // native buttons already turn Enter/Space into a click; handling the
+    // keydown as well would fire the action twice
+    if(keyboard && ev.target && ev.target.tagName === 'BUTTON') return;
+    if(foldAction(rootEl, ev.target) && keyboard) ev.preventDefault();
+  };
+}
+function bindFoldHandlers(rootEl){
+  const handler = foldHandler(rootEl);
+  rootEl.onclick = handler;
+  rootEl.onkeydown = handler;
+}
+bindFoldHandlers($('d-body'));
+
+/* drawer focus management: move focus in on open, restore it on close, and
+   keep Tab inside the dialog while it is visible */
+let drawerOpen = false, drawerOpener = null;
+function trapDrawerFocus(ev){
+  if(ev.key !== 'Tab' || !drawerOpen) return;
+  const box = $('drawer');
+  const items = box.querySelectorAll('button, [tabindex="0"], a[href], input, select');
+  if(!items || !items.length) return;
+  const first = items[0], last = items[items.length - 1], active = document.activeElement;
+  if(ev.shiftKey && active === first){ ev.preventDefault(); if(last.focus) last.focus(); }
+  else if(!ev.shiftKey && active === last){ ev.preventDefault(); if(first.focus) first.focus(); }
+}
+function closeDrawer(){
+  $('drawer').classList.remove('on'); $('mask').classList.remove('on');
+  drawerOpen = false;
+  if(drawerOpener && drawerOpener.focus) drawerOpener.focus();
+  drawerOpener = null;
+}
+$('d-close').onclick = closeDrawer;
 
 /* The first pass stops at JS_MAX_EVENTS so a 23k-record session does not blow
    up memory, but it did already walk every line, so all the statistics are
@@ -1764,7 +1879,10 @@ async function parseMoreEvents(btn){
   openDrawer(s.id);
 }
 $('mask').onclick = closeDrawer;
-document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape') closeDrawer();
+  trapDrawerFocus(e);
+});
 $('rows').addEventListener('click', e=>{
   const tr = e.target.closest('tr.row'); if(tr) openDrawer(tr.dataset.id);
 });
@@ -1773,7 +1891,7 @@ $('rows').addEventListener('click', e=>{
 let P = DATA.product || {};
 function foldItem(title, meta, body){
   const text = body || '';
-  return '<div class="th"><div class="hd"><span>'+esc(title)+'</span><span class="ar">'
+  return '<div class="th"><div class="hd" tabindex="0" role="button"><span>'+esc(title)+'</span><span class="ar">'
     +(meta?esc(meta)+' · ':'')+'展开 ▾</span></div>'
     +'<div class="pv">'+esc(text.slice(0,300))+(text.length>300?'…':'')+'</div>'
     +'<div class="bd">'+esc(text)+'</div></div>';
@@ -1798,7 +1916,7 @@ function renderPrompts(){
 
   $('p-agents').innerHTML = (P.agents||[]).map(a=>{
     const meta = ((a.modelTags||[]).length?a.modelTags.join('/')+' · ':'')+((a.tools||[]).length)+' 个工具';
-    return '<div class="th"><div class="hd"><span><b>'+esc(a.name||'?')+'</b>'
+    return '<div class="th"><div class="hd" tabindex="0" role="button"><span><b>'+esc(a.name||'?')+'</b>'
       +(a.desc?(' — '+esc(a.desc)):'')+'</span><span class="ar">'+esc(meta)+' · 展开 ▾</span></div>'
       +'<div class="pv">'+esc((a.prompt||'').slice(0,300))+((a.prompt||'').length>300?'…':'')+'</div>'
       +'<div class="bd">'+esc(a.prompt||'（该 agent 无 instructions 文本）')+'</div></div>';
@@ -1829,7 +1947,7 @@ function renderPrompts(){
   $('p-sub').innerHTML = (P.subagents||[]).map(s=>foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
     || '<div class="empty">无内置子代理</div>';
 
-  ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ $(id).onclick = foldHandler($(id)); });
+  ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ bindFoldHandlers($(id)); });
 }
 document.querySelectorAll('.tab').forEach(t=>{
   t.onclick = ()=>{
