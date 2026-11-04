@@ -231,6 +231,9 @@
       <select id="f-sort">
         <option value="updated">按最近更新</option>
         <option value="created">按创建时间</option>
+        <option value="title">按标题</option>
+        <option value="ws">按工作空间</option>
+        <option value="model">按模型</option>
         <option value="tools">按工具调用数</option>
         <option value="turns">按对话轮数</option>
         <option value="duration">按时长</option>
@@ -299,7 +302,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793702891453};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793778095128};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -368,6 +371,7 @@ function drawDays(el, days){
 /* ---------- hour histogram ---------- */
 function drawHours(el, arr){
   const w = el.clientWidth||600, h=190, padL=28, padR=8, padT=10, padB=22;
+  if(!arr.length || arr.every(v=>!v)){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
   const max = Math.max(1, ...arr);
   const iw = w-padL-padR, ih = h-padT-padB, bw = iw/24;
   let s = svgEl(w,h);
@@ -411,6 +415,7 @@ function drawHBar(el, items, color, unit){
 /* ---------- context histogram ---------- */
 function drawCtx(el, buckets){
   const w = el.clientWidth||600, h=190, padL=28,padR=8,padT=10,padB=22;
+  if(!buckets.length || buckets.every(b=>!b.value)){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
   const max = Math.max(1, ...buckets.map(b=>b.value));
   const iw=w-padL-padR, ih=h-padT-padB, bw=iw/buckets.length;
   let s=svgEl(w,h);
@@ -512,9 +517,16 @@ function renderCharts(){
 const uniq = arr => [...new Set(arr)].sort();
 const modeOf = s => (s.config&&(s.config.interaction||s.config.mode)) || '未知';
 function renderFilters(){
-  $('f-ws').innerHTML = '<option value="">全部工作空间</option>' + uniq(S.map(s=>s.ws)).map(v=>'<option>'+esc(v)+'</option>').join('');
-  $('f-model').innerHTML = '<option value="">全部模型</option>' + uniq(S.map(s=>s.model||'未知')).map(v=>'<option>'+esc(v)+'</option>').join('');
-  $('f-mode').innerHTML = '<option value="">全部模式</option>' + uniq(S.map(modeOf)).map(v=>'<option>'+esc(v)+'</option>').join('');
+  // ingest repaints the board repeatedly; rebuilding the <option> list used to
+  // silently drop whatever the reader had selected
+  const keep = {ws:$('f-ws').value||'', model:$('f-model').value||'', mode:$('f-mode').value||''};
+  const ws = uniq(S.map(s=>s.ws)), mdl = uniq(S.map(s=>s.model||'未知')), mde = uniq(S.map(modeOf));
+  $('f-ws').innerHTML = '<option value="">全部工作空间</option>' + ws.map(v=>'<option>'+esc(v)+'</option>').join('');
+  $('f-model').innerHTML = '<option value="">全部模型</option>' + mdl.map(v=>'<option>'+esc(v)+'</option>').join('');
+  $('f-mode').innerHTML = '<option value="">全部模式</option>' + mde.map(v=>'<option>'+esc(v)+'</option>').join('');
+  if(keep.ws && ws.includes(keep.ws)) $('f-ws').value = keep.ws;
+  if(keep.model && mdl.includes(keep.model)) $('f-model').value = keep.model;
+  if(keep.mode && mde.includes(keep.mode)) $('f-mode').value = keep.mode;
 }
 
 let sortKey = 'updated', page = 0, PAGE = 40;
@@ -535,11 +547,27 @@ function filtered(){
     }
     return true;
   }).sort((a,b)=>{
+    // text columns must not fall through to the numeric branch: they used to
+    // silently sort by file size while the header claimed "title"
+    if(sortKey==='title' || sortKey==='ws' || sortKey==='model'){
+      const v = (o)=> String((sortKey==='title'?o.title:sortKey==='ws'?o.ws:o.model)||'').toLowerCase();
+      return v(a).localeCompare(v(b),'zh-CN') || (b.updated||0)-(a.updated||0);
+    }
     const g = (o,k)=> k==='updated'?(o.updated||0):k==='created'?(o.created||0):k==='tools'?(o.toolCalls||0)
       :k==='turns'?((o.turnsUser||0)+(o.turnsAssistant||0)):k==='duration'?(o.duration||0)
       :k==='ctx'?((o.ctxSize?o.ctxUsed/o.ctxSize:0)):(o.bytes||0);
     return g(b,sortKey)-g(a,sortKey);
   });
+}
+/* keep the header highlight and the dropdown showing the same field: the two
+   controls set sortKey independently, so both go through here */
+function setSort(k){
+  sortKey = k || 'updated';
+  document.querySelectorAll('th[data-sort]').forEach(o=>{
+    o.classList.toggle('on', o.dataset.sort === sortKey);
+  });
+  const sel = $('f-sort');
+  if(sel) sel.value = sortKey;
 }
 function renderList(reset){
   if(reset) page = 0;
@@ -562,13 +590,11 @@ function renderList(reset){
   $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
 }
 document.querySelectorAll('th[data-sort]').forEach(th=>{
-  th.onclick = ()=>{ sortKey = th.dataset.sort;
-    document.querySelectorAll('th[data-sort]').forEach(o=>o.classList.remove('on'));
-    th.classList.add('on'); renderList(true); };
+  th.onclick = ()=>{ setSort(th.dataset.sort); renderList(true); };
 });
 ['q','f-ws','f-model','f-mode','f-err','f-agent','f-think','f-sort'].forEach(id=>{
   const el = $(id);
-  el.addEventListener(id==='q'?'input':'change', ()=>{ if(id==='f-sort') sortKey = el.value; renderList(true); });
+  el.addEventListener(id==='q'?'input':'change', ()=>{ if(id==='f-sort') setSort(el.value); renderList(true); });
 });
 $('more').onclick = ()=>{ page++; renderList(false); };
 
@@ -651,7 +677,8 @@ function openDrawer(id){
     const raw = e.raw || '';
     const tag = esc(KIND_LABEL[e.k] || e.k);
     const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
-    return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'+(e.t?fmtTime(e.t).slice(5):'')+'</div>'
+    return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'
+      +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
       +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
       +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
       +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
@@ -665,17 +692,20 @@ function openDrawer(id){
   }).join('') || '<div class="empty">该会话没有可展示的事件</div>';
   // past the cap the records are still on disk: offer to render the next page,
   // and to pull more out of the file when the parse stopped early
-  const rest = Math.max(0, (s.records || evCount) - evCount);
+  // only the records dropped by the per-session cap are still on disk. Using
+  // records - events over-counted records without a timestamp, so the button
+  // kept offering a batch that could never be produced.
+  const rest = s.dropped != null ? s.dropped : Math.max(0, (s.records || evCount) - evCount);
   if(evCount > shown){
     html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
-      +'显示更多事件（还有 '+(evCount - shown)+' 条）</button></div>';
+      +'显示更多已解析事件（还有 '+(evCount - shown)+' 条）</button></div>';
   }
   if(rest > 0){
     html += '<div style="margin-top:8px">'
       + (s.__file
-        ? '<button class="btn" type="button" data-act="ev-parse">从文件再解析 '+EV_STEP+' 条记录（还有约 '
+        ? '<button class="btn" type="button" data-act="ev-parse">从文件继续解析 '+EV_STEP+' 条（磁盘上还有 '
           +rest+' 条）</button>'
-        : '<span class="tiny" style="color:'+C.amber+'">还有约 '+rest+' 条记录未解析：'
+        : '<span class="tiny" style="color:'+C.amber+'">磁盘上还有 '+rest+' 条记录未解析：'
           +'当前载入方式没有保留文件句柄，换成在页面上选中目录即可继续读取</span>')
       +'</div>';
   }
@@ -707,18 +737,45 @@ const maskPath = s => {
   const lower = MASK_USER.toLowerCase();
   return v.replace(MASK_RE, m => (m.toLowerCase() === lower ? '<user>' : '~'));
 };
+/* Product config is parsed from a local snapshot at runtime, so its long prompt
+   templates can carry the same home paths / account names as the records.
+   Mask the whole structure, not just meta.file. It is plain JSON.parse output
+   (no File handles, no cycles), so a recursive walk is safe here; sessions are
+   masked field by field below precisely to avoid walking their File handles. */
+function maskInPlace(v){
+  if(typeof v === 'string') return maskPath(v);
+  if(Array.isArray(v)){ for(let i=0;i<v.length;i++) v[i] = maskInPlace(v[i]); return v; }
+  if(v && typeof v === 'object'){ for(const k of Object.keys(v)) v[k] = maskInPlace(v[k]); return v; }
+  return v;
+}
+function maskProduct(p){
+  if(!p) return p;
+  maskInPlace(p);
+  // lengths are shown next to the templates, so keep them in sync after masking
+  (p.prompts||[]).forEach(x=>{ if(x && typeof x.text === 'string') x.len = x.text.length; });
+  return p;
+}
 function maskSession(s){
   if(s.file) s.file = maskPath(s.file);
   if(s.ws) s.ws = maskPath(s.ws);
   if(s.cwd) s.cwd = maskPath(s.cwd);
   if(s.title) s.title = maskPath(s.title);
   if(s.prompt) s.prompt = maskPath(s.prompt);
-  (s.events||[]).forEach(e=>{ if(e.raw) e.raw = maskPath(e.raw); });
+  if(s.model) s.model = maskPath(s.model);
+  // tool names, model names, event kinds and config strings are all rendered;
+  // a snapshot could have picked up a local path in any of them
+  [s.tools, s.runtimeModels, s.typeCounts].forEach(list=>{
+    (list||[]).forEach(p=>{ if(p && typeof p[0] === 'string') p[0] = maskPath(p[0]); });
+  });
+  if(s.plugins) s.plugins.forEach((p,i)=>{ if(typeof p === 'string') s.plugins[i] = maskPath(p); });
+  if(s.config) for(const k of Object.keys(s.config))
+    if(typeof s.config[k] === 'string') s.config[k] = maskPath(s.config[k]);
+  (s.events||[]).forEach(e=>{ if(e && e.raw) e.raw = maskPath(e.raw); });
 }
 function applyPrivacy(){
   DATA.rootShown = maskPath(DATA.root);
   S.forEach(maskSession);
-  if(P && P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
+  maskProduct(P);
 }
 
 /* ---------- local file loading: read data.json straight from disk, no server ---------- */
@@ -825,7 +882,8 @@ function jsStat(){
            creditFromUsage:0, requests:0},
     sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
     skipCore:0, skipAux:0, maxCore:JS_MAX_EVENTS, maxAux:JS_MAX_AUX, peakTokens:0,
-    lines:0, badLines:0, title:'', titleTs:null, cwd:''};
+    lines:0, badLines:0, title:'', titleTs:null, cwd:'',
+    seq:0, lastSeenTs:null, dropped:0};
 }
 /* resuming a parse: skip what is already on screen, then keep up to max more */
 function jsApplyOpts(st, opts){
@@ -857,12 +915,17 @@ const NAME_CHARS = 12000;
 
 function jsEvent(st, kind, ts, line, budget){
   st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
+  // seq is the record's position in the file. It survives a re-parse of the
+  // same file, so it is a stable identity for de-duplication and a stable
+  // tie-breaker for records that carry no usable timestamp.
+  const seq = st.seq++;
+  if(ts != null) st.lastSeenTs = ts;
   const core = !!CORE_KINDS_JS[kind];
   const seen = core ? st.nCore : st.nAux;
   if(core) st.nCore++; else st.nAux++;
   const skip = core ? st.skipCore : st.skipAux;
-  if(seen < skip) return;
-  if(seen - skip >= (core ? st.maxCore : st.maxAux)) return;
+  if(seen < skip) return;                 // already shown in an earlier batch
+  if(seen - skip >= (core ? st.maxCore : st.maxAux)){ st.dropped++; return; }
   // budget 0 = keep every record whole, including the per-record cap
   const take = budget === 0 ? line.length
     : (() => {
@@ -871,7 +934,12 @@ function jsEvent(st, kind, ts, line, budget){
         return want <= JS_RAW_PREVIEW ? want
           : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
       })();
-  const ev = {t: ts, k: kind, size: line.length, raw: line.slice(0, take)};
+  // Records without a timestamp used to be dropped by a filter(e => e.t),
+  // which made records != events and left "parse more" permanently claiming
+  // there was data left. Keep them, inherit the preceding time, and say so.
+  const ev = {t: ts != null ? ts : (st.lastSeenTs != null ? st.lastSeenTs : 0),
+              k: kind, size: line.length, raw: line.slice(0, take), seq: seq};
+  if(ts == null) ev.noTs = true;
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
   if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
   st.events.push(ev);
@@ -1061,8 +1129,9 @@ function jsFinish(st, id, wsFallback, size){
     ctxUsed: null, ctxSize: null, peakTokens: st.peakTokens || null,
     bytes: size || 0, lines: st.lines, badLines: st.badLines,
     records: Object.keys(st.typeCounter).reduce((a,k)=>a+st.typeCounter[k], 0),
+    dropped: st.dropped,
     prompt: st.firstPrompt,
-    events: st.events.filter(e => e.t).sort((a,b)=>a.t-b.t),
+    events: st.events.sort((a,b)=>a.t-b.t || (a.seq||0)-(b.seq||0)),
     rawChars: st.rawChars,
     typeCounts: kv(st.typeCounter).sort((a,b)=>b[1]-a[1]),
     systemMsgs: st.systemMsgs, snapshots: st.snapshots,
@@ -1131,11 +1200,13 @@ function fileLabel(f){
   const parts = p.split('/').filter(Boolean);
   return parts.length > 1 ? parts[parts.length - 2] : '';
 }
+const DROP_MAX_FILES = 5000;
 function walkEntry(entry, out){
   return new Promise(res=>{
-    if(!entry) return res();
+    if(!entry || out.length >= DROP_MAX_FILES) return res();
     if(entry.isFile){
       entry.file(f=>{
+        if(out.length >= DROP_MAX_FILES) return res();
         try { f.__wbPath = entry.fullPath; } catch(e){}
         out.push(f); res();
       }, ()=>res());
@@ -1146,7 +1217,16 @@ function walkEntry(entry, out){
     const rd = entry.createReader();
     const kids = [];
     const step = ()=>rd.readEntries(list=>{
-      if(!list.length) return Promise.all(kids.map(k=>walkEntry(k, out))).then(()=>res(), ()=>res());
+      if(!list.length || kids.length >= DROP_MAX_FILES){
+        // cache holds gigabytes of unrelated files; the only part the dashboard
+        // can use is the product-config snapshot directory
+        let allowed = kids;
+        if(entry.name === 'cache')
+          allowed = kids.filter(k=>k.name === 'conversation-product-spill');
+        else if(entry.name === 'conversation-product-spill')
+          allowed = kids.filter(k=>k.isFile && /\.json$/i.test(k.name));
+        return Promise.all(allowed.map(k=>walkEntry(k, out))).then(()=>res(), ()=>res());
+      }
       kids.push(...list); step();
     }, ()=>res());
     step();
@@ -1169,7 +1249,9 @@ async function collectFromHandle(root){
       if(h.kind !== 'directory') continue;
       for await (const [fn, fh] of h.entries()){
         if(fh.kind === 'file' && /\.jsonl$/i.test(fn)) jsonl.push({name: fn, dir: name, handle: fh});
+        if(jsonl.length > 5000) break;
       }
+      if(jsonl.length > 5000) break;
     }
   } else {
     // the user may have picked projects/ itself, or something unexpected
@@ -1424,7 +1506,7 @@ async function ingestFiles(files){
       + (failed ? ' · ' + failed + ' 个失败' : '') + (skipped ? ' · ' + skipped + ' 个跳过' : '');
   };
   tick(0);
-  renderAll();
+  renderAll(true);
 
   let lastPaint = 0, lastFull = 0;
   for(let i = 0; i < use.length; i++){
@@ -1456,8 +1538,8 @@ async function ingestFiles(files){
     // the table and KPIs are cheap, the six charts are not: repaint those often,
     // redraw the charts only about once a second
     const now = Date.now();
-    if(now - lastPaint > 120){ lastPaint = now; compute(); renderMeta(); renderList(true); }
-    if(i === use.length - 1 || now - lastFull > 900){ lastFull = now; renderAll(); }
+    if(now - lastPaint > 120){ lastPaint = now; compute(); renderMeta(); renderList(false); }
+    if(i === use.length - 1 || now - lastFull > 900){ lastFull = now; renderAll(true); }
   }
 
   let product = P;
@@ -1466,9 +1548,8 @@ async function ingestFiles(files){
     try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || P; }
     catch(e){ product = emptyProduct('产品配置解析失败：' + e.message); }
   }
-  P = product;
-  if(P.meta && P.meta.file) P.meta.file = maskPath(P.meta.file);
-  renderAll();
+  P = maskProduct(product);
+  renderAll(true);
   $('progbar').style.width = '100%';
   $('cancelbtn').style.display = 'none';
   const stopped = run !== ingestRun;
@@ -1553,14 +1634,25 @@ async function parseMoreEvents(btn){
     d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
       {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
   } catch(err){ btn.textContent = '解析失败：' + err.message; return; }
-  const seen = new Set((s.events||[]).map(e=>e.t+'|'+e.k+'|'+e.size));
+  // seq is the file-relative record number and is stable across re-parses.
+  // t|kind|size alone used to merge two distinct records that happened to share
+  // a millisecond, a kind and a line length. Keep the old key too, so payloads
+  // produced before seq existed still de-duplicate.
+  const keys = e => e.seq != null
+    ? ['s'+e.seq, 'k'+e.t+'|'+e.k+'|'+e.size]
+    : ['k'+e.t+'|'+e.k+'|'+e.size];
+  const seen = new Set();
+  (s.events||[]).forEach(e=>keys(e).forEach(k=>seen.add(k)));
   let added = 0;
   for(const e of (d.events||[])){
-    const key = e.t+'|'+e.k+'|'+e.size;
-    if(!seen.has(key)){ s.events.push(e); seen.add(key); added++; }
+    if(keys(e).some(k=>seen.has(k))) continue;
+    keys(e).forEach(k=>seen.add(k));
+    s.events.push(e); added++;
   }
-  s.events.sort((a,b)=>a.t-b.t);
+  s.events.sort((a,b)=>a.t-b.t || (a.seq||0)-(b.seq||0));
   if(d.records) s.records = Math.max(s.records||0, d.records);
+  // this pass reports exactly how many records are still beyond its own cap
+  if(d.dropped != null) s.dropped = d.dropped;
   evShown += Math.max(EV_STEP, added);
   openDrawer(s.id);
 }
@@ -1621,8 +1713,11 @@ function renderPrompts(){
       || '<div class="empty">没有匹配的模板</div>';
   };
   drawTools(); drawPrompts();
-  if($('p-tool-q').addEventListener) $('p-tool-q').addEventListener('input', drawTools);
-  if($('p-prompt-q').addEventListener) $('p-prompt-q').addEventListener('input', drawPrompts);
+  // assignment, not addEventListener: renderPrompts runs on every tab switch
+  // and every full repaint, so listeners would otherwise stack up and fire the
+  // same redraw N times per keystroke
+  $('p-tool-q').oninput = drawTools;
+  $('p-prompt-q').oninput = drawPrompts;
 
   $('p-sub').innerHTML = (P.subagents||[]).map(s=>foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
     || '<div class="empty">无内置子代理</div>';
@@ -1640,12 +1735,13 @@ document.querySelectorAll('.tab').forEach(t=>{
   };
 });
 
-function renderAll(){
+function renderAll(keepPage){
   compute();
   renderMeta();
   renderFilters();
   renderCharts();
-  renderList(true);
+  // during ingest this runs many times; do not throw the reader back to page 1
+  renderList(!keepPage);
   if($('p-agents').innerHTML) renderPrompts();
 }
 
@@ -1701,6 +1797,7 @@ if(needData) $('loadbtn').textContent = '收起载入面板';
 
 buildMask(DATA.root);
 applyPrivacy();
+setSort('updated');
 renderAll();
 let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt = setTimeout(renderCharts, 150); });
 </script>
