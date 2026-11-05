@@ -146,6 +146,9 @@ File API 完成，刷新页面即回到无数据状态。
   滚动、aria 状态与事件冒泡；需要 `pip install playwright`，可用 `WB_CHROME` 指定浏览器路径
 - `python performance-profile.py`：用完全合成的大规模会话（约 15 MB / 3 万条记录 + 60 个中等会话）
   在真实浏览器里剖析载入、续解析、翻页、搜索与渲染耗时，不读取任何真实用户数据
+- `python behavior-snapshot.py --save` / `--compare`：导出真实浏览器里列表、图表、抽屉、提示页以及
+  筛选/搜索/排序后的关键 DOM 输出并逐字节比对，用来证明重构没有改变外部行为。
+  演示数据的时钟可用 `WB_DEMO_NOW` 固定，保证基线可复现
 
 `python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试加载它），
 `python build.py` 从模板重建这份不含数据的部署页。两个 Python 脚本会在演示页比模板旧时自动重新生成。

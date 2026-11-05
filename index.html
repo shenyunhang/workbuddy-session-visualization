@@ -346,7 +346,52 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793876790795};
+/**
+ * @typedef {Object} DashboardData
+ * @property {Session[]} sessions
+ * @property {ProductConfig} product
+ * @property {number} generatedAt
+ * @property {boolean} deploy
+ * @property {string} root
+ * @property {string} [rootShown]
+ * @property {Object} source
+ */
+
+/**
+ * @typedef {Object} Session
+ * @property {string} id
+ * @property {string} title
+ * @property {string} titleSrc @values ai, prompt, none
+ * @property {string} ws
+ * @property {string} [model] primary model name
+ * @property {Array<[string, number]>} [modelCounts] records handled per model
+ * @property {Array<[string, number]>} [runtimeModels] explicit model declarations
+ * @property {Array<Object>} [modelSegments] contiguous model runs in file order
+ * @property {EventRecord[]} events
+ * @property {number} toolCalls
+ * @property {number} toolErrors
+ * @property {number} [toolIncomplete]
+ * @property {number} [toolUnknown]
+ * @property {Array<[string, number]>} [unknownStatuses]
+ * @property {number} created
+ * @property {number} updated
+ */
+
+/**
+ * @typedef {Object} EventRecord
+ * @property {number} t timestamp (inherited when missing)
+ * @property {string} k record kind
+ * @property {number} size
+ * @property {string} raw original JSON text
+ * @property {number} seq line index, stable across re-parses
+ * @property {string} [m] model in effect
+ * @property {number} [mx] 1 when the record states its model, 0 when inherited
+ * @property {boolean} [noTs]
+ * @property {number} [cut] see CUT
+ */
+
+/** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793878255846};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -361,12 +406,18 @@ const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ESC_MAP[c]);
 const fmtSize = n => n==null ? '—' : (n>1024 ? (n/1024).toFixed(1)+'K 字符' : n+' 字符');
 const RAW_PREVIEW = 240;
+/* Abnormal tool results are the three non-ok buckets from toolStatusKind(). */
+const abnormalCount = s => (s && ((s.toolErrors||0)+(s.toolIncomplete||0)+(s.toolUnknown||0))) || 0;
 const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /* Highlight search hits after escaping, so neither the markup nor a stray
    regex metacharacter in the reader's query can break the output. */
-function highlightText(text, q){
-  if(!q) return esc(text);
-  const re = new RegExp(escapeRegExp(q), 'gi');
+/** Compile a query once; a full-text render can reuse it for 1200 fragments. */
+function compileHighlight(q){
+  return q ? new RegExp(escapeRegExp(q), 'gi') : null;
+}
+function highlightWith(re, text){
+  if(!re) return esc(text);
+  re.lastIndex = 0;                 // the RegExp is shared across fragments
   let out = '', last = 0, m;
   while((m = re.exec(text)) !== null){
     if(!m[0].length){ re.lastIndex++; continue; }
@@ -374,6 +425,9 @@ function highlightText(text, q){
     last = m.index + m[0].length;
   }
   return out + esc(text.slice(last));
+}
+function highlightText(text, q){
+  return highlightWith(compileHighlight(q), text);
 }
 /* A multi-MB tool result can contain tens of thousands of JSON tokens. Giving
    each its own <span> freezes the tab, so colour only a bounded prefix and a
@@ -385,7 +439,8 @@ function hlTokens(raw, q){
   // q is optional: without it E is plain esc(), so the initial parse path is
   // unchanged. With it, hits inside tokens and gaps get <mark> but the span
   // structure stays intact (escaping always happens before wrapping).
-  const E = t => highlightText(t, q);
+  const highlightRe = compileHighlight(q);
+  const E = t => highlightWith(highlightRe, t);
   let out = '', last = 0, m, n = 0;
   while(n < HL_TOKENS && (m = re.exec(raw)) !== null){
     out += E(raw.slice(last, m.index));
@@ -406,12 +461,32 @@ function jsonHl(raw, q){
   return raw.length <= HL_CHARS ? hlTokens(raw, q)
     : hlTokens(raw.slice(0, HL_CHARS), q) + highlightText(raw.slice(HL_CHARS), q);
 }
+/**
+ * Tunable thresholds in one place. Values are exactly the former inline
+ * literals; naming them records what each one controls.
+ */
+const LIMITS = {
+  SEARCH_DEBOUNCE_MS: 180,
+  RESIZE_DEBOUNCE_MS: 150,
+  INGEST_PAINT_MS: 120,
+  INGEST_FULL_MS: 900,
+  BIG_FILE_PROGRESS_LINES: 40000,
+  MODEL_SEGMENT_MAX: 100,
+  UNKNOWN_STATUS_MAX: 8,
+  RAW_CACHE_QUERIES: 12,
+  CTX_DANGER_PCT: 80,
+  CTX_WARN_PCT: 50,
+  CWD_SCAN_CHARS: 8000,
+};
+/** Why a record's raw JSON is not whole. */
+const CUT = {TRUNCATED: 1, NOT_INLINED: 2};
 const C = {blue:'#5b8cff',teal:'#2dd4bf',amber:'#f5a524',red:'#f2555a',violet:'#a78bfa',gray:'#64748b',
   green:'#639922',pink:'#d4537e'};
 const KIND_LABEL = {user:'用户输入',assistant:'助手回复',system:'系统提示',reasoning:'思考',tool:'工具调用',
   result:'工具返回',meta:'会话元信息',title:'标题生成',snapshot:'文件快照',usage:'用量上报',credit:'积分扣减',fork:'重发分支'};
-const colorOf = k => ({user:C.blue,assistant:C.teal,system:C.pink,reasoning:C.violet,tool:C.amber,
-  result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray})[k] || C.gray;
+const KIND_COLOR = {user:C.blue,assistant:C.teal,system:C.pink,reasoning:C.violet,tool:C.amber,
+  result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray};
+const colorOf = k => KIND_COLOR[k] || C.gray;
 /* Hash the model name, not its array index: colours must stay tied to a model
    even when a filter hides some of them. */
 const MODEL_COLORS = [C.blue, C.teal, C.amber, C.violet, C.pink, C.green, C.red];
@@ -517,28 +592,45 @@ function drawCtx(el, buckets){
 }
 
 /* ---------- aggregate (recomputed whenever the session set changes) ---------- */
+/* The label and its upper bound live together, so adding a bucket cannot
+   leave a hard-coded comparison chain out of sync. */
+const TOOL_BUCKETS = [
+  {label:'0',      max:0},
+  {label:'1-10',   max:10},
+  {label:'11-30',  max:30},
+  {label:'31-80',  max:80},
+  {label:'81-200', max:200},
+  {label:'200+',   max:Infinity},
+];
 const topArr = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value}));
 let days = [], hours = [], modelCount = {}, modelRecordCount = {},
     toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [];
 let modelMode = 'sessions';   // 'sessions' = one primary model per session, 'records' = all model records
-function compute(){
+/** @returns {Array<Object>} per-day activity buckets, oldest first */
+function computeDays(){
   const dayMap = new Map();
   S.forEach(s=>{
     const key = s.created ? fmtDate(s.created) : '未知';
     if(!dayMap.has(key)) dayMap.set(key,{label:key,sessions:0,tools:0,ms:s.created||0});
     const d = dayMap.get(key); d.sessions++; d.tools += s.toolCalls||0;
   });
-  days = [...dayMap.values()].sort((a,b)=>a.ms-b.ms);
-
-  hours = new Array(24).fill(0);
+  return [...dayMap.values()].sort((a,b)=>a.ms-b.ms);
+}
+/** @returns {number[]} 24 hourly buckets of genuinely timestamped messages */
+function computeHours(){
+  const buckets = new Array(24).fill(0);
   S.forEach(s=>(s.events||[]).forEach(e=>{
+    if(!e) return;                     // older snapshots can hold null slots
     // a record with no timestamp inherits one for ordering, or gets 0; either
     // way it must not be counted as real activity in a particular hour
     if((e.k==='user'||e.k==='assistant') && !e.noTs && e.t)
-      hours[new Date(e.t).getHours()]++;
+      buckets[new Date(e.t).getHours()]++;
   }));
-
-  modelCount = {}; modelRecordCount = {}; toolCount = {}; wsCount = {};
+  return buckets;
+}
+/** @returns {Object} every cross-session distribution the charts consume */
+function computeDistributions(){
+  const modelCount = {}, modelRecordCount = {}, toolCount = {}, wsCount = {};
   S.forEach(s=>{
     const m = s.model||'未知';
     modelCount[m] = (modelCount[m]||0)+1;
@@ -554,7 +646,7 @@ function compute(){
   // WorkBuddy gives every session its own dated directory, so "top workspace"
   // degenerates into a wall of ties at 1; the size ranking says far more, and
   // the bars double as a way into the session itself
-  sizeTop = S.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0)).slice(0,10).map(s=>({
+  const sizeTop = S.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0)).slice(0,10).map(s=>({
     label: s.title || s.id.slice(0, 8),
     value: s.bytes || 0,
     text: fmtBytes(s.bytes || 0),
@@ -565,12 +657,26 @@ function compute(){
 
   // context usage lives in workbuddy.db, which the browser never reads, so the
   // old breakdown was empty here; tool calls per session is always computable
-  const tb = [['0',0],['1-10',0],['11-30',0],['31-80',0],['81-200',0],['200+',0]];
+  const counts = new Array(TOOL_BUCKETS.length).fill(0);
   S.forEach(s=>{
     const n = s.toolCalls || 0;
-    tb[n === 0 ? 0 : n <= 10 ? 1 : n <= 30 ? 2 : n <= 80 ? 3 : n <= 200 ? 4 : 5][1]++;
+    const i = TOOL_BUCKETS.findIndex(b => n <= b.max);
+    counts[i < 0 ? TOOL_BUCKETS.length - 1 : i]++;
   });
-  toolBuckets = tb.map(([label, value])=>({label, value}));
+  const toolBuckets = TOOL_BUCKETS.map((b,i)=>({label:b.label, value:counts[i]}));
+  return {modelCount, modelRecordCount, toolCount, wsCount, sizeTop, toolBuckets};
+}
+/** Recomputed whenever the session set changes; assigns the shared chart state. */
+function compute(){
+  days = computeDays();
+  hours = computeHours();
+  const d = computeDistributions();
+  modelCount = d.modelCount;
+  modelRecordCount = d.modelRecordCount;
+  toolCount = d.toolCount;
+  wsCount = d.wsCount;
+  sizeTop = d.sizeTop;
+  toolBuckets = d.toolBuckets;
 }
 
 /* ---------- KPI ---------- */
@@ -578,7 +684,10 @@ function renderMeta(){
   const totalTurns = S.reduce((a,s)=>a+(s.turnsUser||0)+(s.turnsAssistant||0),0);
   const totalTools = S.reduce((a,s)=>a+(s.toolCalls||0),0);
   const spanDays = (()=>{ const ts=S.map(s=>s.created).filter(Boolean); if(!ts.length) return 0;
-    return Math.max(1, Math.round((Math.max(...ts)-Math.min(...ts))/86400000)); })();
+    // a linear scan avoids spreading an unbounded array into Math.max/Math.min
+    let lo = Infinity, hi = -Infinity;
+    for(const t of ts){ if(t < lo) lo = t; if(t > hi) hi = t; }
+    return Math.max(1, Math.round((hi-lo)/86400000)); })();
   const totalThinking = S.reduce((a,s)=>a+(s.reasoning||0),0);
   const kpis = [
     ['会话总数', S.length],
@@ -634,7 +743,20 @@ function renderFilters(){
 }
 
 let sortKey = 'updated', sortDir = 1, page = 0, PAGE = 40;
-const isTextSortKey = k => k === 'title' || k === 'ws' || k === 'model';
+/** @type {Object<string, function(Session): string>} text columns sort A→Z */
+const SORT_TEXT_FIELDS = {title:o=>o.title, ws:o=>o.ws, model:o=>o.model};
+/** @type {Object<string, function(Session): number>} numeric columns sort largest first */
+const SORT_ACCESSORS = {
+  updated:  o => o.updated || 0,
+  created:  o => o.created || 0,
+  tools:    o => o.toolCalls || 0,
+  abnormal: o => abnormalCount(o),
+  turns:    o => (o.turnsUser || 0) + (o.turnsAssistant || 0),
+  duration: o => o.duration || 0,
+  ctx:      o => (o.ctxSize ? o.ctxUsed / o.ctxSize : 0),
+  bytes:    o => o.bytes || 0,
+};
+const isTextSortKey = k => !!SORT_TEXT_FIELDS[k];
 /* Searching raw event payloads is opt-in: with budget 0 a single session can
    hold megabytes of JSON. Cache the answer per (session, query), debounce the
    input, require a minimum term length, and bound how much text one session
@@ -659,7 +781,7 @@ function rawMatch(s, q){
     if(scanned > RAW_SCAN_LIMIT){ capped = true; rawScanCapped = true; break; }
     if(raw.toLowerCase().includes(q)){ hit = true; break; }
   }
-  if(cache.size > 12) cache.clear();
+  if(cache.size > LIMITS.RAW_CACHE_QUERIES) cache.clear();
   cache.set(q, {hit: hit, capped: capped});
   return hit;
 }
@@ -689,15 +811,14 @@ function filtered(){
    makes the header, the dropdown and the arrow agree on one source of truth. */
 function compareSessions(a, b){
   let d;
-  if(isTextSortKey(sortKey)){
-    const v = o => String((sortKey==='title'?o.title:sortKey==='ws'?o.ws:o.model)||'').toLowerCase();
+  const textField = SORT_TEXT_FIELDS[sortKey];
+  if(textField){
+    const v = o => String(textField(o) || '').toLowerCase();
     d = v(a).localeCompare(v(b),'zh-CN') || (b.updated||0)-(a.updated||0);
   } else {
-    const g = (o,k)=> k==='updated'?(o.updated||0):k==='created'?(o.created||0):k==='tools'?(o.toolCalls||0)
-      :k==='abnormal'?abnormalCount(o)
-      :k==='turns'?((o.turnsUser||0)+(o.turnsAssistant||0)):k==='duration'?(o.duration||0)
-      :k==='ctx'?((o.ctxSize?o.ctxUsed/o.ctxSize:0)):(o.bytes||0);
-    d = g(b,sortKey)-g(a,sortKey);
+    // an unregistered key historically fell through to file size; keep that
+    const accessor = SORT_ACCESSORS[sortKey] || SORT_ACCESSORS.bytes;
+    d = accessor(b) - accessor(a);
   }
   return d * sortDir;
 }
@@ -747,7 +868,7 @@ function renderList(reset){
             +((s.toolIncomplete||0)+(s.toolUnknown||0))+' 未完成</span>' : '')
         +'</td>'
       +'<td>'+(pct==null?'<span class="tiny">—</span>'
-        :'<div style="display:flex;align-items:center;gap:6px"><div class="bar"><i style="width:'+pct+'%;background:'+(pct>80?C.red:pct>50?C.amber:C.teal)+'"></i></div><span class="tiny num">'+pct+'%</span></div>')+'</td>'
+        :'<div style="display:flex;align-items:center;gap:6px"><div class="bar"><i style="width:'+pct+'%;background:'+(pct>LIMITS.CTX_DANGER_PCT?C.red:pct>LIMITS.CTX_WARN_PCT?C.amber:C.teal)+'"></i></div><span class="tiny num">'+pct+'%</span></div>')+'</td>'
       +'</tr>';
   }).join('') || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
   $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
@@ -769,7 +890,7 @@ $('q').addEventListener('input', ()=>{
   // scanning raw payloads is expensive, so wait until the reader stops typing
   if($('f-raw') && $('f-raw').checked){
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(()=>renderList(true), 180);
+    searchTimer = setTimeout(()=>renderList(true), LIMITS.SEARCH_DEBOUNCE_MS);
   } else renderList(true);
 });
 $('rows').addEventListener('keydown', e=>{
@@ -874,7 +995,7 @@ function previewHtml(raw, q){
 function eventHtml(e, i, q, isCurrent){
   const raw = e.raw || '';
   const tag = esc(KIND_LABEL[e.k] || e.k);
-  const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
+  const meta = fmtSize(e.size) + (e.cut===CUT.NOT_INLINED ? ' · 超出预算未内联' : (e.cut===CUT.TRUNCATED ? ' · 已截断' : ''));
   const expandable = raw.length > RAW_PREVIEW && e.cut !== 2;
   const expanded = expandable && expandedKeys.has(evKey(e));
   const body = raw
@@ -884,7 +1005,7 @@ function eventHtml(e, i, q, isCurrent){
       + (expandable
           ? '<div class="more" tabindex="0" role="button" aria-expanded="'+(expanded?'true':'false')+'">'
             +(expanded?'收起 ▴':'展开完整 JSON ▾')+'</div>'
-          : (e.cut===2 ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
+          : (e.cut===CUT.NOT_INLINED ? '<div class="tiny" style="color:'+C.amber+'">仅保留开头，把预算设为 0 可保留全文</div>' : ''))
       + (expanded && raw.length > HL_CHARS
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
             +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
@@ -909,6 +1030,7 @@ function eventHtml(e, i, q, isCurrent){
 function drawerEventCandidates(s, q){
   const out = [];
   (s.events||[]).forEach((e, i)=>{
+    if(!e) return;                     // older snapshots can hold null slots
     if(hiddenKinds.has(e.k)) return;
     if(hiddenModels.has(e.m || '')) return;
     if(!q || (e.raw||'').toLowerCase().includes(q)
@@ -938,7 +1060,7 @@ function drawerModelLaneHtml(s){
     }
     html += '</div><div class="tiny" style="margin-bottom:6px">全文件 '+total+' 条记录 · '
       +(s.modelSwitches||0)+' 次切换'
-      +(s.modelSegmentsTruncated?' · 仅显示前 100 段':'')+'</div>';
+      +(s.modelSegmentsTruncated?' · 仅显示前 '+LIMITS.MODEL_SEGMENT_MAX+' 段':'')+'</div>';
   } else {
     const total = counts.reduce((a,p)=>a+(p[1]||0),0) || 1;
     html += '<div class="lane">'+counts.map(p=>{
@@ -1301,7 +1423,6 @@ const TOOL_STATUS_OK = ['completed', 'success', 'ok'];
 const TOOL_STATUS_ERROR = ['error', 'failed', 'failure', 'exception', 'timeout',
   'timed_out', 'cancelled', 'canceled', 'aborted'];
 const TOOL_STATUS_INCOMPLETE = ['incomplete', 'partial', 'truncated', 'interrupted'];
-const abnormalCount = s => (s && ((s.toolErrors||0)+(s.toolIncomplete||0)+(s.toolUnknown||0))) || 0;
 function toolStatusKind(value){
   const s = String(value == null ? '' : value).trim().toLowerCase();
   if(!s || TOOL_STATUS_OK.includes(s)) return 'ok';
@@ -1317,7 +1438,7 @@ function countToolStatus(st, value){
     st.toolUnknown++;
     const key = String(value == null ? '' : value).trim().slice(0, 40) || '(空)';
     if(st.unknownStatuses[key] != null) st.unknownStatuses[key]++;
-    else if(Object.keys(st.unknownStatuses).length < 8) st.unknownStatuses[key] = 1;
+    else if(Object.keys(st.unknownStatuses).length < LIMITS.UNKNOWN_STATUS_MAX) st.unknownStatuses[key] = 1;
   }
 }
 function jsStat(){
@@ -1358,7 +1479,6 @@ const RE_J = {
   cwd:    /(^|[^\\])"cwd"\s*:\s*"([^"]*)"/,
 };
 const HEAD_CHARS = 1500;
-const NAME_CHARS = 12000;
 
 /* Build one event from an already classified record. Shared by the initial
    parse and by the cache-backed resume, so a resumed record is byte-identical
@@ -1377,7 +1497,7 @@ function jsMakeEvent(st, p, line, budget){
   if(p.mx) ev.mx = 1;          // 1 = stated by the record, 0 = inherited
   if(p.noTs) ev.noTs = true;
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
-  if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
+  if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? CUT.TRUNCATED : CUT.NOT_INLINED;
   return ev;
 }
 function jsEvent(st, kind, ts, line, budget){
@@ -1418,7 +1538,7 @@ function jsLine(st, raw, budget){
   const rtype = tm[2];
   if(!st.cwd){
     // only scanned until the first hit, so this costs nothing once set
-    const cm = RE_J.cwd.exec(line.length > 8000 ? line.slice(0, 8000) : line);
+    const cm = RE_J.cwd.exec(line.length > LIMITS.CWD_SCAN_CHARS ? line.slice(0, LIMITS.CWD_SCAN_CHARS) : line);
     if(cm) st.cwd = cm[2].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
   }
   if(ts){
@@ -1487,7 +1607,7 @@ function jsModel(st, head, lineIdx, ts){
   const key = st.curModel || '';
   const segs = st.modelSegs, last = segs[segs.length - 1];
   if(last && last.model === key && !st.modelSegsTruncated){ last.count++; return; }
-  if(segs.length >= 100){ st.modelSegsTruncated = true; return; }
+  if(segs.length >= LIMITS.MODEL_SEGMENT_MAX){ st.modelSegsTruncated = true; return; }
   segs.push({model: key, exact: !!model, count: 1, firstSeq: lineIdx, firstTs: ts || null});
   if(key && last && last.model && last.model !== key) st.modelSwitches++;
 }
@@ -2023,7 +2143,7 @@ async function ingestOneFile(state, f, index){
     const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, state.budget, null,
       (done, total)=>{
         // a single file can be tens of MB; show its own progress while it runs
-        state.sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
+        state.sub = total > LIMITS.BIG_FILE_PROGRESS_LINES ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
         ingestTick(state, index);
       }, cache);
     state.sub = '';
@@ -2046,8 +2166,8 @@ async function ingestOneFile(state, f, index){
   // the table and KPIs are cheap, the six charts are not: repaint those often,
   // redraw the charts only about once a second
   const now = Date.now();
-  if(now - state.lastPaint > 120){ state.lastPaint = now; compute(); renderMeta(); renderList(false); }
-  if(index === state.use.length - 1 || now - state.lastFull > 900){ state.lastFull = now; renderAll(true); }
+  if(now - state.lastPaint > LIMITS.INGEST_PAINT_MS){ state.lastPaint = now; compute(); renderMeta(); renderList(false); }
+  if(index === state.use.length - 1 || now - state.lastFull > LIMITS.INGEST_FULL_MS){ state.lastFull = now; renderAll(true); }
 }
 async function loadProductSnapshot(prod, run){
   let product = P;
@@ -2313,7 +2433,7 @@ $('rows').addEventListener('click', e=>{
 /* ---------- prompt / product config view ---------- */
 let P = DATA.product || {};
 function foldItem(title, meta, body){
-  const text = body || '';
+  const text = String(body || '');
   return '<div class="th"><div class="hd" tabindex="0" role="button"><span>'+esc(title)+'</span><span class="ar">'
     +(meta?esc(meta)+' · ':'')+'展开 ▾</span></div>'
     +'<div class="pv">'+esc(text.slice(0,300))+(text.length>300?'…':'')+'</div>'
@@ -2322,7 +2442,7 @@ function foldItem(title, meta, body){
 function renderPromptSource(){
   const m = P.meta || {};
   $('p-src').innerHTML = esc(m.productName||'')+' · genie '+esc(m.genieVersion||'?')
-    +' · commit '+esc((m.commit||'').slice(0,8))+' · '+esc((m.date||'').slice(0,10))
+    +' · commit '+esc(String(m.commit||'').slice(0,8))+' · '+esc(String(m.date||'').slice(0,10))
     +' · 本地快照 '+m.snapshots+' 个<div class="pathbox">'+esc(m.file||'')+'</div>';
 }
 function renderPromptKpis(){
@@ -2338,10 +2458,11 @@ function renderPromptKpis(){
 function renderAgents(){
   $('p-agents').innerHTML = (P.agents||[]).map(a=>{
     const meta = ((a.modelTags||[]).length?a.modelTags.join('/')+' · ':'')+((a.tools||[]).length)+' 个工具';
+    const prompt = String(a.prompt || '');
     return '<div class="th"><div class="hd" tabindex="0" role="button"><span><b>'+esc(a.name||'?')+'</b>'
       +(a.desc?(' — '+esc(a.desc)):'')+'</span><span class="ar">'+esc(meta)+' · 展开 ▾</span></div>'
-      +'<div class="pv">'+esc((a.prompt||'').slice(0,300))+((a.prompt||'').length>300?'…':'')+'</div>'
-      +'<div class="bd">'+esc(a.prompt||'（该 agent 无 instructions 文本）')+'</div></div>';
+      +'<div class="pv">'+esc(prompt.slice(0,300))+(prompt.length>300?'…':'')+'</div>'
+      +'<div class="bd">'+esc(prompt||'（该 agent 无 instructions 文本）')+'</div></div>';
   }).join('');
 }
 function toolListHtml(q){
@@ -2479,7 +2600,7 @@ buildMask(DATA.root);
 applyPrivacy();
 setSort('updated');
 renderAll();
-let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt = setTimeout(renderCharts, 150); });
+let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt = setTimeout(renderCharts, LIMITS.RESIZE_DEBOUNCE_MS); });
 </script>
 </body>
 </html>
