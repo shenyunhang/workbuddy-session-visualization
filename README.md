@@ -125,6 +125,8 @@ File API 完成，刷新页面即回到无数据状态。
 - `node browser-test.js`：浏览器侧解析、缓存续解析、目录选择、拖放保护等流程（Node VM + DOM 桩）
 - `python real-browser-test.py`：**真实 Chromium** 端到端验收，覆盖 `innerHTML` 解析、焦点移交、
   滚动、aria 状态与事件冒泡；需要 `pip install playwright`，可用 `WB_CHROME` 指定浏览器路径
+- `python performance-profile.py`：用完全合成的大规模会话（约 15 MB / 3 万条记录 + 60 个中等会话）
+  在真实浏览器里剖析载入、续解析、翻页、搜索与渲染耗时，不读取任何真实用户数据
 
 `python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试加载它），
-`python build.py` 从模板重建这份不含数据的部署页。
+`python build.py` 从模板重建这份不含数据的部署页。两个 Python 脚本会在演示页比模板旧时自动重新生成。

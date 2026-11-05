@@ -327,7 +327,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793855614275};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793864108191};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -850,10 +850,42 @@ function updateEventSearchControls(q, matched){
   if(prev) prev.disabled = !has;
   if(next) next.disabled = !has;
 }
+function eventQuery(){
+  return (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+}
+function eventRest(s, evCount){
+  return s.dropped != null ? s.dropped : Math.max(0, (s.records || evCount) - evCount);
+}
+function drawerEventTitleText(s, q, matched, shown, kinds, evCount){
+  return q
+    ? '事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）'
+    : '事件流（已显示 '+shown+' / '+matched+' 条'
+      +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）';
+}
+function drawerEventActionsHtml(s, matched, shown, evCount){
+  let html = '';
+  if(matched > shown){
+    html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
+      +'显示更多已解析事件（还有 '+(matched - shown)+' 条）</button></div>';
+  }
+  // only the records dropped by the per-session cap are still on disk; using
+  // records - events over-counted records without a timestamp
+  const rest = eventRest(s, evCount);
+  if(rest > 0){
+    html += '<div style="margin-top:8px">'
+      + (s.__file
+        ? '<button class="btn" type="button" data-act="ev-parse">从文件继续解析 '+EV_STEP+' 条（磁盘上还有 '
+          +rest+' 条）</button>'
+        : '<span class="tiny" style="color:'+C.amber+'">磁盘上还有 '+rest+' 条记录未解析：'
+          +'当前载入方式没有保留文件句柄，换成在页面上选中目录即可继续读取</span>')
+      +'</div>';
+  }
+  return html;
+}
 function drawerEventsHtml(s){
   const kinds = s.typeCounts || [];
   const evAll = s.events || [];
-  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+  const q = eventQuery();
   const cutCount = evAll.filter(e=>e.cut).length;
   const evCount = evAll.length;
   const candidates = drawerEventCandidates(s, q);
@@ -866,10 +898,8 @@ function drawerEventsHtml(s){
   } else if(!q) evHitIndex = 0;
   updateEventSearchControls(q, matched);
   const shown = Math.min(matched, evShown);
-  let html = q
-    ? '<h2>事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）</h2>'
-    : '<h2>事件流（已显示 '+shown+' / '+matched+' 条'
-      +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
+  let html = '<h2 id="ev-title">'
+    + esc(drawerEventTitleText(s, q, matched, shown, kinds, evCount))+'</h2>';
   if(q){
     html += '<div class="tiny" style="margin-bottom:8px">仅在当前已载入的 '+evCount
       +' 条事件中查找；磁盘上未解析的记录需先点「从文件继续解析」。</div>';
@@ -888,27 +918,37 @@ function drawerEventsHtml(s){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += candidates.slice(0, shown).map((c, pos)=>
-    eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('')
-    || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>';
-  // only the records dropped by the per-session cap are still on disk; using
-  // records - events over-counted records without a timestamp
-  const rest = s.dropped != null ? s.dropped : Math.max(0, (s.records || evCount) - evCount);
-  if(matched > shown){
-    html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
-      +'显示更多已解析事件（还有 '+(matched - shown)+' 条）</button></div>';
-  }
-  if(rest > 0){
-    html += '<div style="margin-top:8px">'
-      + (s.__file
-        ? '<button class="btn" type="button" data-act="ev-parse">从文件继续解析 '+EV_STEP+' 条（磁盘上还有 '
-          +rest+' 条）</button>'
-        : '<span class="tiny" style="color:'+C.amber+'">磁盘上还有 '+rest+' 条记录未解析：'
-          +'当前载入方式没有保留文件句柄，换成在页面上选中目录即可继续读取</span>')
-      +'</div>';
-  }
+  html += '<div id="ev-list">'
+    + (candidates.slice(0, shown).map((c, pos)=>
+        eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('')
+       || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>')
+    + '</div>';
+  html += '<div id="ev-actions">'
+    + drawerEventActionsHtml(s, matched, shown, evCount) + '</div>';
   html += '<div class="tiny" style="margin-top:16px">原始记录文件</div><div class="pathbox">'+esc(s.file)+'</div>';
   return html;
+}
+/* Paging used to repaint every visible event, so the tenth click was ten times
+   slower than the first. Append only the new rows and refresh the title and
+   buttons in place; existing DOM nodes keep their expanded state and scroll. */
+function showMoreEvents(){
+  const s = cur; if(!s) return;
+  const q = eventQuery();
+  const candidates = drawerEventCandidates(s, q);
+  const before = Math.min(candidates.length, evShown);
+  evShown += EV_STEP;
+  const after = Math.min(candidates.length, evShown);
+  const list = $('ev-list');
+  if(!list || !list.insertAdjacentHTML){ openDrawer(s.id); return; }
+  const rows = candidates.slice(before, after).map((c, pos)=>
+    eventHtml(c.e, c.i, q, !!(q && before + pos === evHitIndex))).join('');
+  if(rows) list.insertAdjacentHTML('beforeend', rows);
+  const title = $('ev-title'), actions = $('ev-actions');
+  const evCount = (s.events||[]).length;
+  if(title) title.textContent = drawerEventTitleText(s, q, candidates.length, after,
+    s.typeCounts||[], evCount);
+  if(actions) actions.innerHTML = drawerEventActionsHtml(s, candidates.length, after, evCount);
+  updateEventSearchControls(q, candidates.length);
 }
 
 function openDrawer(id){
@@ -950,7 +990,7 @@ function scrollToCurrentHit(){
   if(node && node.scrollIntoView) node.scrollIntoView({block:'center'});
 }
 function moveEventHit(delta){
-  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+  const q = eventQuery();
   if(!q || !cur) return;
   const matched = drawerEventCandidates(cur, q).length;
   if(!matched) return;
@@ -1407,6 +1447,21 @@ function writeParseCache(cacheOut, st, lines, budget){
   cacheOut.pending = st.pending;
   cacheOut.rawChars = st.rawChars;
   cacheOut.budget = budget;
+  // Split the held-back records into core/aux queues. A large session can hold
+  // 30k+ of them; with one array a resume had to walk all of them (and rebuild
+  // the remainder) just to emit 100. Cursors make that O(batch).
+  cacheOut.pendingCore = [];
+  cacheOut.pendingAux = [];
+  for(const p of st.pending){
+    if(CORE_KINDS_JS[p.k]) cacheOut.pendingCore.push(p);
+    else cacheOut.pendingAux.push(p);
+  }
+  cacheOut.cursorCore = 0;
+  cacheOut.cursorAux = 0;
+}
+function cacheRemaining(cache){
+  return (cache.pendingCore.length - cache.cursorCore)
+       + (cache.pendingAux.length - cache.cursorAux);
 }
 function jsParse(text, id, wsFallback, size, budget, opts, cacheOut){
   const st = jsApplyOpts(jsStat(), opts);
@@ -1911,7 +1966,7 @@ function toggleRaw(row){
   };
   if(pre.dataset.full){ finish(); return; }
   const inline = cur.events[idx] && cur.events[idx].raw;
-  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+  const q = eventQuery();
   if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline, q); pre.dataset.full = '1'; }
   finish();
 }
@@ -1924,7 +1979,7 @@ function foldAction(rootEl, target){
   const all = closest('[data-act="th-all"]');
   if(all){ toggleAllFolds(all, rootEl); return true; }
   if(cur){
-    if(closest('[data-act="ev-more"]')){ evShown += EV_STEP; openDrawer(cur.id); return true; }
+    if(closest('[data-act="ev-more"]')){ showMoreEvents(); return true; }
     const parse = closest('[data-act="ev-parse"]');
     if(parse){ parseMoreEvents(parse); return true; }
   }
@@ -1998,14 +2053,12 @@ $('ev-q-clear').onclick = ()=>{
    complete. Emit the next batch straight from the cached lines: no file read,
    no split, no re-scan of the records already accounted for. */
 function cachedBatch(cache, step){
-  const take = [], keep = [];
-  let core = 0, aux = 0;
-  for(const p of cache.pending){
-    const isCore = !!CORE_KINDS_JS[p.k];
-    if(isCore ? core < step : aux < step){ take.push(p); if(isCore) core++; else aux++; }
-    else keep.push(p);
-  }
-  cache.pending = keep;
+  const coreFrom = cache.cursorCore, auxFrom = cache.cursorAux;
+  cache.cursorCore = Math.min(cache.pendingCore.length, coreFrom + step);
+  cache.cursorAux = Math.min(cache.pendingAux.length, auxFrom + step);
+  const take = cache.pendingCore.slice(coreFrom, cache.cursorCore)
+    .concat(cache.pendingAux.slice(auxFrom, cache.cursorAux));
+  take.sort((a,b)=>a.i-b.i);   // restore file order before emitting
   // read the live control, matching the fallback path's behaviour if the
   // reader changed the raw-JSON budget after the first parse
   const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
@@ -2018,7 +2071,7 @@ function cachedBatch(cache, step){
     return ev;
   });
   cache.rawChars = st.rawChars;
-  return {events: events, dropped: keep.length};
+  return {events: events, dropped: cacheRemaining(cache)};
 }
 async function parseMoreEvents(btn){
   const s = cur;
