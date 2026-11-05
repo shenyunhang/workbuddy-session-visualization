@@ -391,7 +391,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793884595980};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793886350707};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -405,6 +405,14 @@ const fmtBytes = b => b>1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math
 const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ESC_MAP[c]);
 const fmtSize = n => n==null ? '—' : (n>1024 ? (n/1024).toFixed(1)+'K 字符' : n+' 字符');
+/** FileReader rejects with a ProgressEvent, which has no .message. */
+function errorText(err){
+  if(err == null) return '未知错误';
+  if(err.message) return String(err.message);
+  if(err.name) return String(err.name);
+  const text = String(err);
+  return (text && text !== '[object Object]') ? text : '未知错误';
+}
 const RAW_PREVIEW = 240;
 /** Coerce to text and clip; safe for ids, hashes and dates. */
 function clip(text, n){ return String(text == null ? '' : text).slice(0, n); }
@@ -475,6 +483,20 @@ function jsonHl(raw, q){
 /** Named states so a typo cannot silently change a comparison. */
 const MODEL_MODE = {SESSIONS:'sessions', RECORDS:'records'};
 const TITLE_SOURCE = {AI:'ai', PROMPT:'prompt', NONE:'none'};
+/**
+ * The three ingest controls used to have four different fallback numbers
+ * (100/0/1024 in the markup; 60/20000/150 and 0 in the readers), so clearing
+ * an input silently changed the effective limits. One table drives both.
+ */
+const INPUT_DEFAULTS = {maxfiles: 100, rawbudget: 0, mbcap: 1024};
+function controlNumber(id){
+  const el = $(id);
+  const parsed = el ? parseFloat(el.value) : NaN;
+  return Number.isFinite(parsed) ? parsed : INPUT_DEFAULTS[id];
+}
+function maxFilesValue(){ return Math.max(1, Math.trunc(controlNumber('maxfiles'))); }
+function rawBudgetValue(){ return Math.max(0, Math.trunc(controlNumber('rawbudget'))); }
+function byteCapValue(){ return Math.max(1, controlNumber('mbcap')) * 1048576; }
 const LIMITS = {
   SEARCH_DEBOUNCE_MS: 180,
   RESIZE_DEBOUNCE_MS: 150,
@@ -641,6 +663,26 @@ function computeHours(){
   return buckets;
 }
 /** @returns {Object} every cross-session distribution the charts consume */
+/**
+ * Keep the ten largest sessions in O(N * 10) instead of sorting all N.
+ * New entries are inserted after equal-valued ones, which reproduces the
+ * stable-sort order and therefore the original chart labels exactly.
+ */
+function topByBytes(list, n){
+  const top = [];
+  for(const item of (list || [])){
+    const value = (item && item.bytes) || 0;
+    let at = top.length;
+    for(let i = 0; i < top.length; i++){
+      if(((top[i] && top[i].bytes) || 0) < value){ at = i; break; }
+    }
+    if(at < n){
+      top.splice(at, 0, item);
+      if(top.length > n) top.pop();
+    }
+  }
+  return top;
+}
 function computeDistributions(){
   const modelCount = {}, modelRecordCount = {}, toolCount = {}, wsCount = {};
   S.forEach(s=>{
@@ -658,7 +700,7 @@ function computeDistributions(){
   // WorkBuddy gives every session its own dated directory, so "top workspace"
   // degenerates into a wall of ties at 1; the size ranking says far more, and
   // the bars double as a way into the session itself
-  const sizeTop = S.slice().sort((a,b)=>(b.bytes||0)-(a.bytes||0)).slice(0,10).map(s=>({
+  const sizeTop = topByBytes(S, 10).map(s=>({
     label: s.title || clip(s.id, 8),
     value: s.bytes || 0,
     text: fmtBytes(s.bytes || 0),
@@ -926,10 +968,13 @@ let evScrollPending = false; // scroll on an explicit jump, not on every keystro
 /* Resuming a parse inserts records and re-sorts the events, so array indexes
    are not stable. seq is the file-relative line number; fall back to the old
    descriptor for payloads produced before seq existed. */
-function evKey(e){
-  if(!e) return 'k||';
-  return e.seq != null ? 's'+e.seq : 'k'+e.t+'|'+e.k+'|'+e.size;
+function evKeys(e){
+  if(!e) return ['k||'];
+  return e.seq != null
+    ? ['s'+e.seq, 'k'+e.t+'|'+e.k+'|'+e.size]
+    : ['k'+e.t+'|'+e.k+'|'+e.size];
 }
+function evKey(e){ return evKeys(e)[0]; }
 
 /* Static details at the top of the drawer: metadata, first question, tool
    histogram and the observable prompt-context configuration. */
@@ -950,6 +995,8 @@ function drawerMetaHtml(s){
     ['思考片段', s.reasoning||0], ['上下文占用', pct==null?'—':(pct+'%（'+s.ctxUsed.toLocaleString()+' / '+s.ctxSize.toLocaleString()+'）')],
     ['记录行数 / 体积', (s.lines||0)+' 行 / '+fmtBytes(s.bytes||0)],
   ];
+  if(s.toolCallsUnanswered)
+    meta.push(['调用未收到结果', s.toolCallsUnanswered + ' 次（按 callId 配对）']);
   if(s.unknownStatuses && s.unknownStatuses.length)
     meta.push(['未识别的状态', s.unknownStatuses.map(p=>p[0]+' ×'+p[1]).join(' · ')]);
   const ml = modelList(s);
@@ -1292,6 +1339,7 @@ function maskInPlace(v){
 function maskProduct(p){
   if(!p) return p;
   maskInPlace(p);
+  productRevision++;        // in-place mutation invalidates the prompt view
   // lengths are shown next to the templates, so keep them in sync after masking
   (p.prompts||[]).forEach(x=>{ if(x && typeof x.text === 'string') x.len = x.text.length; });
   return p;
@@ -1353,7 +1401,7 @@ function readDataFile(f){
       st.innerHTML = '<span style="color:'+C.teal+'">已载入 '+esc(f.name)+' · '+fmtBytes(f.size)
         +' · '+d.sessions.length+' 个会话</span>';
     }catch(err){
-      st.innerHTML = '<span style="color:'+C.amber+'">载入失败：'+esc(err.message)+'</span>';
+      st.innerHTML = '<span style="color:'+C.amber+'">载入失败：'+esc(errorText(err))+'</span>';
     }
   };
   fr.onerror = ()=>{ st.innerHTML = '<span style="color:'+C.amber+'">读取文件失败</span>'; };
@@ -1464,7 +1512,8 @@ function jsStat(){
     skipCore:0, skipAux:0, maxCore:JS_MAX_EVENTS, maxAux:JS_MAX_AUX, peakTokens:0,
     lines:0, badLines:0, title:'', titleTs:null, cwd:'',
     lineIdx:0, curLine:0, lastSeenTs:null, dropped:0, pending:[],
-    curModel:null, modelExact:false, modelSegs:[], modelSwitches:0, modelSegsTruncated:false};
+    curModel:null, modelExact:false, modelSegs:[], modelSwitches:0, modelSegsTruncated:false,
+    callIds:new Set(), answeredCallIds:new Set()};
 }
 /* resuming a parse: skip what is already on screen, then keep up to max more */
 function jsApplyOpts(st, opts){
@@ -1486,6 +1535,9 @@ const RE_J = {
   ts:     /(^|[^\\])"timestamp"\s*:\s*(-?\d+)/,
   role:   /(^|[^\\])"role"\s*:\s*"([^"]+)"/,
   status: /(^|[^\\])"status"\s*:\s*"([^"]*)"/,
+  isError: /"is_error"\s*:\s*(true|false)/i,
+  isErrorCamel: /"isError"\s*:\s*(true|false)/i,
+  callId: /"callId"\s*:\s*"([^"]*)"/,
   name:   /(^|[^\\])"name"\s*:\s*"([^"]*)"/,
   modelA: /(^|[^\\])"requestModelName"\s*:\s*"([^"]*)"/,
   modelB: /(^|[^\\])"model"\s*:\s*"([^"]*)"/,
@@ -1539,6 +1591,26 @@ function jsEvent(st, kind, ts, line, budget){
  * event. Adding a record type no longer means growing an if/else chain.
  * @type {Object<string, function(ParseState, string, number|null, string, number): void>}
  */
+/**
+ * Resolve a tool result's status from the fast-path head or a parsed record.
+ * Some producers wrote is_error / isError booleans instead of a status field;
+ * those map to error / completed so they are never silently counted as ok.
+ */
+function classifyToolResult(st, head, rec){
+  const sm = head && RE_J.status.exec(head);
+  let status = sm ? sm[2] : (rec && rec.status != null ? String(rec.status) : '');
+  if(!status){
+    const flag = rec ? (rec.is_error != null ? rec.is_error : rec.isError) : null;
+    if(flag === true || flag === 'true') status = 'error';
+    else if(flag === false || flag === 'false') status = 'completed';
+    else if(head){
+      const em = RE_J.isError.exec(head) || RE_J.isErrorCamel.exec(head);
+      // one capture group here, unlike RE_J.status which has a leading guard
+      if(em) status = /^true$/i.test(em[1]) ? 'error' : 'completed';
+    }
+  }
+  countToolStatus(st, status);
+}
 const RECORD_HANDLERS = {
   'file-history-snapshot': (st, head, ts, line, budget) => {
     st.snapshots++;
@@ -1549,11 +1621,14 @@ const RECORD_HANDLERS = {
     jsEvent(st, 'reasoning', ts, line, budget);
   },
   function_call_result: (st, head, ts, line, budget) => {
-    const sm = RE_J.status.exec(head);
-    countToolStatus(st, sm ? sm[2] : '');
+    const cid = RE_J.callId.exec(head);
+    if(cid) st.answeredCallIds.add(cid[1]);
+    classifyToolResult(st, head, null);
     jsEvent(st, 'result', ts, line, budget);
   },
   function_call: (st, head, ts, line, budget) => {
+    const cid = RE_J.callId.exec(head);
+    if(cid) st.callIds.add(cid[1]);
     // the tool name sits after providerData, which can be huge; the regex stops
     // at the first unescaped "name": so it never has to walk the whole record
     const nm = RE_J.name.exec(line);
@@ -1687,10 +1762,12 @@ function jsRecord(st, line, budget){
   } else if(rtype === 'reasoning') st.reasoning++;
   else if(rtype === 'function_call'){
     st.toolCalls++;
+    if(rec.callId) st.callIds.add(String(rec.callId));
     const n = String(rec.name || 'unknown');
     st.toolCounter[n] = (st.toolCounter[n] || 0) + 1;
   } else if(rtype === 'function_call_result'){
-    countToolStatus(st, rec.status);
+    if(rec.callId) st.answeredCallIds.add(String(rec.callId));
+    classifyToolResult(st, '', rec);
   } else if(rtype === 'file-history-snapshot') st.snapshots++;
   else if(rtype === 'ai-title'){
     // a session can be re-titled as it goes on; WorkBuddy keeps the first one,
@@ -1740,6 +1817,12 @@ function jsFinish(st, id, wsFallback, size){
     turnsUser: st.turnsUser, turnsAssistant: st.turnsAssistant,
     toolCalls: st.toolCalls, toolErrors: st.toolErrors,
     toolIncomplete: st.toolIncomplete, toolUnknown: st.toolUnknown,
+    toolCallsUnanswered: (()=>{
+      if(!st.callIds.size) return 0;   // older snapshots have no call ids
+      let n = 0;
+      for(const id of st.callIds) if(!st.answeredCallIds.has(id)) n++;
+      return n;
+    })(),
     unknownStatuses: kv(st.unknownStatuses).sort((a,b)=>b[1]-a[1]),
     reasoning: st.reasoning,
     tools: kv(st.toolCounter).sort((a,b)=>b[1]-a[1]).slice(0, 12),
@@ -1824,7 +1907,7 @@ function jsProduct(cfg, label){
     subagents: (cfg.builtInSubagents || []).filter(s=>s && typeof s==='object'),
     outputStyles: (cfg.outputStyles || []).filter(o=>o && typeof o==='object').map(o=>({
       name: o.name, instructions: o.instructions, prompt: table[o.instructions] || ''})),
-    models: (cfg.models || []).map(m => typeof m === 'string'
+    models: (cfg.models || []).filter(m => m != null).map(m => typeof m === 'string'
       ? {id:m, name:m} : {id:m && (m.id || m.name), name:m && (m.displayName || m.name)}),
   };
 }
@@ -2041,7 +2124,7 @@ async function pickFreshRoot(st){
   try { return await resolveRoot(await openPicker()); }
   catch(err){
     st.innerHTML = err && err.name === 'AbortError' ? '已取消选择'
-      : '<span style="color:'+C.amber+'">目录选择器不可用：'+esc(err.message)
+      : '<span style="color:'+C.amber+'">目录选择器不可用：'+esc(errorText(err))
         +'。请改用 Chrome / Edge 打开本页。</span>';
     return null;
   }
@@ -2071,7 +2154,7 @@ async function pickDir(opts){
   let got;
   try { got = await collectFromHandle(root); }
   catch(err){
-    st.innerHTML = '<span style="color:'+C.amber+'">读取目录失败：'+esc(err.message)+'</span>';
+    st.innerHTML = '<span style="color:'+C.amber+'">读取目录失败：'+esc(errorText(err))+'</span>';
     return;
   }
   if(!got.jsonl.length){
@@ -2103,7 +2186,7 @@ async function filesFromDrop(dt){
 /* Session files are large - a full history easily runs to hundreds of MB - so
    the scan is incremental: every batch is rendered straight away, the progress
    bar moves, and it can be stopped midway without losing what already parsed. */
-const byteCap = ()=> Math.max(1, parseFloat(($('mbcap') && $('mbcap').value) || '150') || 150) * 1048576;
+const byteCap = ()=> byteCapValue();
 let ingestRun = 0;
 function startIngest(fileList){
   const files = Array.from(fileList || []);
@@ -2154,7 +2237,14 @@ function ingestTick(state, done){
 async function ingestOneFile(state, f, index){
   if(state.bytes > byteCap()){ state.skipped++; return; }
   let txt = null;
-  try { txt = await readText(f); } catch(e){ state.failed++; return; }
+  try { txt = await readText(f); }
+  catch(e){
+    state.failed++;
+    const label = String((f && f.name) || '未知文件');
+    console.warn('[dashboard] 读取失败，已跳过：' + label, e);
+    state.lastError = label + '：' + errorText(e);
+    return;
+  }
   try {
     const name = String(f.name || '').replace(/\.jsonl$/i, '');
     const cache = {};
@@ -2176,7 +2266,12 @@ async function ingestOneFile(state, f, index){
     if(!state.maskReady && s.cwd){ buildMask(s.cwd); state.maskReady = true; S.forEach(maskSession); }
     if(state.maskReady) maskSession(s);
     S.push(s);
-  } catch(e){ state.failed++; }
+  } catch(e){
+    state.failed++;
+    const label = String((f && f.name) || '未知文件');
+    console.warn('[dashboard] 解析失败，已跳过：' + label, e);
+    state.lastError = label + '：' + errorText(e);
+  }
   DATA.source.indexedSessions = S.length;
   DATA.source.scanned = S.length;
   DATA.source.workspaces = new Set(S.map(x=>x.ws)).size;
@@ -2197,7 +2292,7 @@ async function loadProductSnapshot(prod, run){
   if(prod.length && run === ingestRun){
     prod.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
     try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || P; }
-    catch(e){ product = emptyProduct('产品配置解析失败：' + e.message); }
+    catch(e){ product = emptyProduct('产品配置解析失败：' + errorText(e)); }
   }
   return product;
 }
@@ -2213,14 +2308,15 @@ function finishIngest(state, product){
     + (state.jsonlCount > state.use.length
         ? '（目录内共 ' + state.jsonlCount + ' 个文件，可上调上限）' : '')
     + (state.failed ? ' · ' + state.failed + ' 个文件读取或解析失败' : '')
+    + (state.lastError ? ' · 最近失败：' + esc(state.lastError) : '')
     + (state.skipped ? ' · ' + state.skipped + ' 个文件超出体积上限被跳过' : '')
     + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
 }
 async function ingestFiles(files){
   const run = ++ingestRun;
   const st = $('filestatus');
-  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '60', 10) || 60);
-  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '20000', 10));
+  const max = maxFilesValue();
+  const budget = rawBudgetValue();
   const classified = classifyIngestFiles(files);
   const jsonl = classified.jsonl, prod = classified.prod, dump = classified.dump;
   if(!jsonl.length){
@@ -2385,7 +2481,7 @@ function cachedBatch(cache, step){
   take.sort((a,b)=>a.i-b.i);   // restore file order before emitting
   // read the live control, matching the fallback path's behaviour if the
   // reader changed the raw-JSON budget after the first parse
-  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+  const budget = rawBudgetValue();
   const st = {rawChars: cache.rawChars};
   const events = take.map(p=>{
     const line = String(cache.lines[p.i] == null ? '' : cache.lines[p.i]).trim();
@@ -2412,22 +2508,20 @@ async function parseMoreEvents(btn){
     btn.textContent = '正在从文件解析…';
     let txt = null;
     try { txt = await readText(s.__file); }
-    catch(err){ btn.textContent = '读取失败：' + err.message; return; }
+    catch(err){ btn.textContent = '读取失败：' + errorText(err); return; }
     let core = 0, aux = 0;
     (s.events||[]).forEach(e=>{ if(CORE_KINDS_JS[e.k]) core++; else aux++; });
-    const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '0', 10));
+    const budget = rawBudgetValue();
     try {
       d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
         {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
-    } catch(err){ btn.textContent = '解析失败：' + err.message; return; }
+    } catch(err){ btn.textContent = '解析失败：' + errorText(err); return; }
   }
   // seq is the file-relative record number and is stable across re-parses.
   // t|kind|size alone used to merge two distinct records that happened to share
   // a millisecond, a kind and a line length. Keep the old key too, so payloads
   // produced before seq existed still de-duplicate.
-  const keys = e => e.seq != null
-    ? ['s'+e.seq, 'k'+e.t+'|'+e.k+'|'+e.size]
-    : ['k'+e.t+'|'+e.k+'|'+e.size];
+  const keys = evKeys;
   const seen = new Set();
   (s.events||[]).forEach(e=>keys(e).forEach(k=>seen.add(k)));
   let added = 0;
@@ -2522,7 +2616,9 @@ function bindPromptHandlers(){
   $('p-prompt-q').oninput = renderPromptList;
   ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ bindFoldHandlers($(id)); });
 }
+let productRevision = 0, renderedProduct = null, renderedProductRevision = -1;
 function renderPrompts(){
+  renderedProduct = P; renderedProductRevision = productRevision;
   if(!P.ok){
     $('p-src').innerHTML = '<span style="color:'+C.amber+'">未找到产品配置：'+esc(P.error||'未知原因')+'</span>';
     return;
@@ -2559,6 +2655,11 @@ document.querySelectorAll('#c-models-mode [data-mm]').forEach(btn=>{
     renderCharts();
   };
 });
+/* Keep the markup and the JS fallbacks in lockstep from the first paint. */
+Object.keys(INPUT_DEFAULTS).forEach(id=>{
+  const el = $(id);
+  if(el) el.value = String(INPUT_DEFAULTS[id]);
+});
 function renderAll(keepPage, alreadyComputed){
   if(!alreadyComputed) compute();
   renderMeta();
@@ -2566,7 +2667,8 @@ function renderAll(keepPage, alreadyComputed){
   renderCharts();
   // during ingest this runs many times; do not throw the reader back to page 1
   renderList(!keepPage);
-  if($('p-agents').innerHTML) renderPrompts();
+  if($('p-agents').innerHTML
+     && (renderedProduct !== P || renderedProductRevision !== productRevision)) renderPrompts();
 }
 
 /* the hosted page ships with no data: hand it files or a folder and let the

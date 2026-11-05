@@ -123,8 +123,14 @@ File API 完成，刷新页面即回到无数据状态。
   其他非空值记为「状态未识别」并列出具体值，**不再静默算作报错**，也不缺失字段。
   快路径（记录前 1.5 KB 正则）与完整 `JSON.parse` 回退共用同一套分类，
   「只看有异常结果」筛选覆盖后三类。
-- `toolCalls` 数的是 `function_call` 记录，`toolErrors` 数的是 `function_call_result` 记录，
-  两者尚未用 `callId` 配对，所以「N 次调用 · M 次报错」不能严格读作「N 次调用里的 M 次」。
+- `toolCalls` 数的是 `function_call` 记录，`toolErrors` / `toolIncomplete` 数的是
+  `function_call_result` 记录。两者现在会额外按 `callId` 配对，在有该字段的记录里
+  单独显示「调用未收到结果」次数；没有 `callId` 的旧快照不受影响。
+  因此「N 次调用 · M 次报错」仍应读作两个独立口径，但缺结果的情况已可见。
+- 工具结果除 `status` 外也兼容 `is_error` / `isError` 布尔字段（映射到报错 / 完成）。
+- 三个解析上限输入框（最多文件数 / 原文预算 / 体积上限）由同一组默认值
+  `100 / 0 / 1024` 驱动：清空输入框时不会再静默变成另一组上限。
+  文件读取失败时，状态栏会给出最近一次失败的文件名与原因，控制台也有详细日志。
 - **本仓库只有一个页面，不含任何扫描脚本**。解析全部在浏览器里完成，也就不需要
   先在本机跑脚本、更不会生成任何中间文件。如果你手上已经有一份 `data.json` 快照
   （结构同页面内嵌的数据），可以直接拖进页面载入。
@@ -142,13 +148,14 @@ File API 完成，刷新页面即回到无数据状态。
 
 - `node smoke-test.js`：模板语法、静态隐私扫描、纯逻辑与渲染字符串断言（Node VM + DOM 桩）
 - `node browser-test.js`：浏览器侧解析、缓存续解析、目录选择、拖放保护等流程（Node VM + DOM 桩）
-- `python real-browser-test.py`：**真实 Chromium** 端到端验收，覆盖 `innerHTML` 解析、焦点移交、
-  滚动、aria 状态与事件冒泡；需要 `pip install playwright`，可用 `WB_CHROME` 指定浏览器路径
+- `python real-browser-test.py`：**真实浏览器**端到端验收，覆盖 `innerHTML` 解析、焦点移交、
+  滚动、aria 状态与事件冒泡；默认 Chromium，`--browser firefox|webkit|all` 可切换引擎
+  （需 `python -m playwright install firefox webkit`），`WB_CHROME` 可指定 Chromium 路径
 - `python performance-profile.py`：用完全合成的大规模会话（约 15 MB / 3 万条记录 + 60 个中等会话）
   在真实浏览器里剖析载入、续解析、翻页、搜索与渲染耗时，不读取任何真实用户数据
 - `python behavior-snapshot.py --save` / `--compare`：导出真实浏览器里列表、图表、抽屉、提示页以及
-  筛选/搜索/排序后的关键 DOM 输出并逐字节比对，用来证明重构没有改变外部行为。
-  演示数据的时钟可用 `WB_DEMO_NOW` 固定，保证基线可复现
+  筛选/搜索/排序后的关键 DOM 输出并逐字节比对，另外比对两处截图哈希作为视觉基线，
+  用来证明重构没有改变外部行为。演示数据的时钟可用 `WB_DEMO_NOW` 固定，保证基线可复现
 
 `python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试加载它），
 `python build.py` 从模板重建这份不含数据的部署页。两个 Python 脚本会在演示页比模板旧时自动重新生成。
