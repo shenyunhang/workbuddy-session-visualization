@@ -112,6 +112,15 @@
   .kinds{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
   .kinds .tag{cursor:pointer;user-select:none}
   .kinds .tag.off{opacity:.35;text-decoration:line-through}
+  /* model lane: one coloured run per contiguous stretch of the same model */
+  .lane{display:flex;gap:2px;height:26px;margin:6px 0 4px;border-radius:6px;overflow:hidden}
+  .laneseg{min-width:2px;cursor:pointer;display:flex;align-items:center;padding:0 6px;
+    font-size:11px;color:#101319;white-space:nowrap;overflow:hidden}
+  .laneseg.off{opacity:.25}
+  .modellegend{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
+  .modellegend .tag{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:5px}
+  .modellegend .tag i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+  .modellegend .tag.off{opacity:.35;text-decoration:line-through}
   .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
   .sub{font-size:12px;color:var(--txt3)}
   /* raw json payload */
@@ -327,7 +336,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793864108191};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793868406421};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -393,6 +402,19 @@ const KIND_LABEL = {user:'用户输入',assistant:'助手回复',system:'系统�
   result:'工具返回',meta:'会话元信息',title:'标题生成',snapshot:'文件快照',usage:'用量上报',credit:'积分扣减',fork:'重发分支'};
 const colorOf = k => ({user:C.blue,assistant:C.teal,system:C.pink,reasoning:C.violet,tool:C.amber,
   result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray})[k] || C.gray;
+/* Hash the model name, not its array index: colours must stay tied to a model
+   even when a filter hides some of them. */
+const MODEL_COLORS = [C.blue, C.teal, C.amber, C.violet, C.pink, C.green, C.red];
+function modelColor(name){
+  if(!name) return C.gray;
+  let h = 0;
+  for(let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return MODEL_COLORS[h % MODEL_COLORS.length];
+}
+function modelList(s){
+  return s.modelCounts && s.modelCounts.length ? s.modelCounts
+    : (s.runtimeModels || []);
+}
 
 function svgEl(w,h){ return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" xmlns="http://www.w3.org/2000/svg">'; }
 
@@ -688,7 +710,10 @@ function renderList(reset){
       +' aria-label="查看会话 '+esc(s.title)+'">'
       +'<td class="tmax" title="'+esc(s.prompt)+'">'+esc(s.title)+'</td>'
       +'<td class="tmax muted">'+esc(s.ws)+'</td>'
-      +'<td><span class="tag b">'+esc(s.model||'未知')+'</span></td>'
+      +'<td><span class="tag b">'+esc(s.model||'未知')+'</span>'
+        +(modelList(s).length>1
+          ? ' <span class="tiny" style="color:var(--txt3)" title="该会话还用了其他模型">+'
+            +(modelList(s).length-1)+'</span>' : '')+'</td>'
       +'<td class="tiny num">'+fmtTime(s.updated||s.created||0)+'</td>'
       +'<td class="num">'+(s.turnsUser||0)+' / '+(s.turnsAssistant||0)+'</td>'
       +'<td class="num">'+(s.toolCalls||0)+(s.toolErrors?' <span class="tag r">'+s.toolErrors+' 错</span>':'')+'</td>'
@@ -730,6 +755,7 @@ $('more').onclick = ()=>{ page++; renderList(false); };
 /* ---------- drawer ---------- */
 let cur = null;              // session currently shown in the drawer
 let hiddenKinds = new Set(); // event kinds the reader filtered out
+let hiddenModels = new Set(); // models the reader filtered out of the timeline
 let expandedKeys = new Set(); // stable ids of expanded raw records in this session
 const EV_STEP = 100;         // events rendered per page, and records pulled per re-parse
 let evShown = EV_STEP, evCurId = null;
@@ -754,6 +780,10 @@ function drawerMetaHtml(s){
     ['思考片段', s.reasoning||0], ['上下文占用', pct==null?'—':(pct+'%（'+s.ctxUsed.toLocaleString()+' / '+s.ctxSize.toLocaleString()+'）')],
     ['记录行数 / 体积', (s.lines||0)+' 行 / '+fmtBytes(s.bytes||0)],
   ];
+  const ml = modelList(s);
+  if(ml.length > 1)
+    meta.push(['使用模型', ml.slice(0,4).map(p=>p[0]+' ×'+p[1]).join(' · ')
+      +(ml.length>4?' …':'')]);
   // context window size comes from the database, so show the request peak instead
   if(pct == null && s.peakTokens) meta.push(['输入 token 峰值', s.peakTokens.toLocaleString()]);
   const u = s.usage || {};
@@ -821,12 +851,17 @@ function eventHtml(e, i, q, isCurrent){
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
             +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
     : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>';
+  const mc = e.m ? modelColor(e.m) : null;
+  const stripe = mc ? ' style="border-left:3px solid '+mc+';padding-left:8px"' : '';
+  const multi = !!cur && modelList(cur).length > 1;
+  const modelTag = multi && e.m
+    ? ' <span class="tiny" style="color:'+mc+'">· '+esc(e.m)+(e.mx?'':'（继承）')+'</span>' : '';
   return '<div class="ev'+(isCurrent?' current':'')+'" data-k="'+esc(e.k)+'"'
-    +(isCurrent?' data-current="1"':'')+'><div class="ts">'
+    +(isCurrent?' data-current="1"':'')+stripe+'><div class="ts">'
     +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
     +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
     +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
-    +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span></div>'
+    +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span>'+modelTag+'</div>'
     + body + '</div></div>';
 }
 
@@ -837,10 +872,56 @@ function drawerEventCandidates(s, q){
   const out = [];
   (s.events||[]).forEach((e, i)=>{
     if(hiddenKinds.has(e.k)) return;
+    if(hiddenModels.has(e.m || '')) return;
     if(!q || (e.raw||'').toLowerCase().includes(q)
        || String(KIND_LABEL[e.k] || e.k).toLowerCase().includes(q)) out.push({e: e, i: i});
   });
   return out;
+}
+/* A session can switch models mid-conversation. The lane is built from the
+   full-file segments (not the 210 loaded events), so the reader sees every
+   switch; older payloads without per-record models fall back to a share bar. */
+function drawerModelLaneHtml(s){
+  const segs = s.modelSegments || [];
+  const counts = modelList(s);
+  if(!segs.length && !counts.length) return '';
+  let html = '<h2>模型泳道</h2>';
+  if(segs.length){
+    const total = segs.reduce((a,x)=>a+x.count,0) || 1;
+    html += '<div class="lane">';
+    for(const g of segs){
+      const pct = Math.max(0.8, g.count / total * 100);
+      const label = g.model || '未标注';
+      html += '<div class="laneseg'+(hiddenModels.has(g.model||'')?' off':'')+'"'
+        +' data-model="'+esc(g.model||'')+'" tabindex="0" role="button"'
+        +' title="'+esc(label)+' · '+g.count+' 条'+(g.exact?'':'（继承，非显式声明）')+'"'
+        +' style="flex:'+pct+';background:'+modelColor(g.model)+'">'
+        +(pct>14?'<span>'+esc(label)+'</span>':'')+'</div>';
+    }
+    html += '</div><div class="tiny" style="margin-bottom:6px">全文件 '+total+' 条记录 · '
+      +(s.modelSwitches||0)+' 次切换'
+      +(s.modelSegmentsTruncated?' · 仅显示前 100 段':'')+'</div>';
+  } else {
+    const total = counts.reduce((a,p)=>a+(p[1]||0),0) || 1;
+    html += '<div class="lane">'+counts.map(p=>{
+      const pct = Math.max(2, (p[1]||0)/total*100);
+      return '<div class="laneseg'+(hiddenModels.has(p[0])?' off':'')+'"'
+        +' data-model="'+esc(p[0])+'" tabindex="0" role="button"'
+        +' title="'+esc(p[0])+' · '+p[1]+' 条"'
+        +' style="flex:'+pct+';background:'+modelColor(p[0])+'"></div>';
+    }).join('')+'</div>';
+    html += '<div class="tiny" style="margin-bottom:6px">按记录数占比 · 该数据没有逐条模型信息，无法还原切换顺序</div>';
+  }
+  html += '<div class="modellegend">'+counts.map(p=>
+    '<span class="tag'+(hiddenModels.has(p[0])?' off':'')+'" data-model="'+esc(p[0])+'"'
+    +' tabindex="0" role="button" aria-pressed="'+(!hiddenModels.has(p[0]))+'"'
+    +' style="border-color:'+modelColor(p[0])+'55;color:'+modelColor(p[0])+'">'
+    +'<i style="background:'+modelColor(p[0])+'"></i>'+esc(p[0])+' '+p[1]+'</span>').join('')+'</div>';
+  return html;
+}
+function toggleModel(name){
+  if(hiddenModels.has(name)) hiddenModels.delete(name); else hiddenModels.add(name);
+  if(cur) openDrawer(cur.id);
 }
 function updateEventSearchControls(q, matched){
   const has = !!(q && matched);
@@ -900,6 +981,7 @@ function drawerEventsHtml(s){
   const shown = Math.min(matched, evShown);
   let html = '<h2 id="ev-title">'
     + esc(drawerEventTitleText(s, q, matched, shown, kinds, evCount))+'</h2>';
+  html += drawerModelLaneHtml(s);
   if(q){
     html += '<div class="tiny" style="margin-bottom:8px">仅在当前已载入的 '+evCount
       +' 条事件中查找；磁盘上未解析的记录需先点「从文件继续解析」。</div>';
@@ -955,7 +1037,8 @@ function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   // switching sessions is the only thing that should clear the reader's view
   if(cur !== s){
-    expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP; evHitIndex = 0;
+    expandedKeys.clear(); hiddenKinds.clear(); hiddenModels.clear();
+    evShown = EV_STEP; evHitIndex = 0;
     if($('ev-q')) $('ev-q').value = '';
   }
   cur = s; evCurId = id;
@@ -1049,13 +1132,18 @@ function maskSession(s){
   if(s.model) s.model = maskPath(s.model);
   // tool names, model names, event kinds and config strings are all rendered;
   // a snapshot could have picked up a local path in any of them
-  [s.tools, s.runtimeModels, s.typeCounts].forEach(list=>{
+  [s.tools, s.runtimeModels, s.typeCounts, s.modelCounts].forEach(list=>{
     (list||[]).forEach(p=>{ if(p && typeof p[0] === 'string') p[0] = maskPath(p[0]); });
   });
+  (s.modelSegments||[]).forEach(seg=>{ if(seg && seg.model) seg.model = maskPath(seg.model); });
   if(s.plugins) s.plugins.forEach((p,i)=>{ if(typeof p === 'string') s.plugins[i] = maskPath(p); });
   if(s.config) for(const k of Object.keys(s.config))
     if(typeof s.config[k] === 'string') s.config[k] = maskPath(s.config[k]);
-  (s.events||[]).forEach(e=>{ if(e && e.raw) e.raw = maskPath(e.raw); });
+  (s.events||[]).forEach(e=>{
+    if(!e) return;
+    if(e.raw) e.raw = maskPath(e.raw);
+    if(e.m) e.m = maskPath(e.m);
+  });
 }
 function applyPrivacy(){
   DATA.rootShown = maskPath(DATA.root);
@@ -1175,7 +1263,8 @@ function jsStat(){
     sessionMeta:{}, systemMsgs:0, snapshots:0, nCore:0, nAux:0, typeCounter:{},
     skipCore:0, skipAux:0, maxCore:JS_MAX_EVENTS, maxAux:JS_MAX_AUX, peakTokens:0,
     lines:0, badLines:0, title:'', titleTs:null, cwd:'',
-    lineIdx:0, curLine:0, lastSeenTs:null, dropped:0, pending:[]};
+    lineIdx:0, curLine:0, lastSeenTs:null, dropped:0, pending:[],
+    curModel:null, modelExact:false, modelSegs:[], modelSwitches:0, modelSegsTruncated:false};
 }
 /* resuming a parse: skip what is already on screen, then keep up to max more */
 function jsApplyOpts(st, opts){
@@ -1218,6 +1307,8 @@ function jsMakeEvent(st, p, line, budget){
           : Math.min(want, JS_RAW_PREVIEW + Math.max(0, room));
       })();
   const ev = {t: p.t, k: p.k, size: line.length, raw: line.slice(0, take), seq: p.i};
+  if(p.m) ev.m = p.m;          // model in effect for this record
+  if(p.mx) ev.mx = 1;          // 1 = stated by the record, 0 = inherited
   if(p.noTs) ev.noTs = true;
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
   if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? 1 : 2;
@@ -1231,7 +1322,7 @@ function jsEvent(st, kind, ts, line, budget){
   // usable timestamp (which inherit the preceding time and are flagged noTs).
   const p = {i: st.curLine, k: kind,
     t: ts != null ? ts : (st.lastSeenTs != null ? st.lastSeenTs : 0),
-    noTs: ts == null};
+    noTs: ts == null, m: st.curModel || null, mx: st.modelExact};
   const core = !!CORE_KINDS_JS[kind];
   const seen = core ? st.nCore : st.nAux;
   if(core) st.nCore++; else st.nAux++;
@@ -1250,11 +1341,15 @@ function jsLine(st, raw, budget){
   st.curLine = lineIdx;
   st.lines++;
   const head = line.length > HEAD_CHARS ? line.slice(0, HEAD_CHARS) : line;
+  const tsm = RE_J.ts.exec(head);
+  const ts = tsm ? jsToMs(+tsm[2]) : null;
+  // every record contributes to the model timeline, even ones whose type we
+  // do not recognise; a record without a model field inherits the last known
+  // one and is marked inexact
+  jsModel(st, head, lineIdx, ts);
   const tm = RE_J.type.exec(head);
   if(!tm){ jsRecord(st, line, budget); return; }
   const rtype = tm[2];
-  const tsm = RE_J.ts.exec(head);
-  const ts = tsm ? jsToMs(+tsm[2]) : null;
   if(!st.cwd){
     // only scanned until the first hit, so this costs nothing once set
     const cm = RE_J.cwd.exec(line.length > 8000 ? line.slice(0, 8000) : line);
@@ -1265,19 +1360,16 @@ function jsLine(st, raw, budget){
     if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
   }
   if(rtype === 'file-history-snapshot'){
-    jsModel(st, head);
     st.snapshots++;
     jsEvent(st, 'snapshot', ts, line, budget);
     return;
   }
   if(rtype === 'reasoning'){
-    jsModel(st, head);
     st.reasoning++;
     jsEvent(st, 'reasoning', ts, line, budget);
     return;
   }
   if(rtype === 'function_call_result'){
-    jsModel(st, head);
     const sm = RE_J.status.exec(head);
     const s = sm ? sm[2] : '';
     if(s && s !== 'completed' && s !== 'success' && s !== 'ok') st.toolErrors++;
@@ -1285,7 +1377,6 @@ function jsLine(st, raw, budget){
     return;
   }
   if(rtype === 'function_call'){
-    jsModel(st, head);
     // the tool name sits after providerData, which can be huge; the regex stops
     // at the first unescaped "name": so it never has to walk the whole record
     const nm = RE_J.name.exec(line);
@@ -1318,9 +1409,22 @@ function jsLine(st, raw, budget){
   jsRecord(st, line, budget);
 }
 
-function jsModel(st, head){
+function jsModel(st, head, lineIdx, ts){
   const mm = RE_J.modelA.exec(head) || RE_J.modelB.exec(head);
-  if(mm && mm[2]) st.models[mm[2]] = (st.models[mm[2]] || 0) + 1;
+  const model = mm && mm[2] ? mm[2] : null;
+  st.modelExact = !!model;
+  if(model){
+    st.models[model] = (st.models[model] || 0) + 1;
+    st.curModel = model;
+  }
+  // contiguous runs in file order. Capped so a pathologically chatty file
+  // cannot put tens of thousands of tiny segments into the payload.
+  const key = st.curModel || '';
+  const segs = st.modelSegs, last = segs[segs.length - 1];
+  if(last && last.model === key && !st.modelSegsTruncated){ last.count++; return; }
+  if(segs.length >= 100){ st.modelSegsTruncated = true; return; }
+  segs.push({model: key, exact: !!model, count: 1, firstSeq: lineIdx, firstTs: ts || null});
+  if(key && last && last.model && last.model !== key) st.modelSwitches++;
 }
 
 function jsParseLine(line, st){
@@ -1345,8 +1449,6 @@ function jsRecord(st, line, budget){
     if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
   }
   const prov = (rec.providerData && typeof rec.providerData === 'object') ? rec.providerData : {};
-  const model = prov.requestModelName || prov.model;
-  if(model) st.models[String(model)] = (st.models[String(model)] || 0) + 1;
   if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
   // context window size only exists in the database, but the request payload
   // carries the prompt size, so keep the peak as a usable stand-in
@@ -1404,6 +1506,12 @@ function jsRecord(st, line, budget){
 function jsFinish(st, id, wsFallback, size){
   const kv = o => Object.keys(o).map(k => [k, o[k]]);
   const models = kv(st.models).sort((a,b)=>b[1]-a[1]);
+  // aggregate segment lengths so the legend counts the records a model
+  // actually handled, including ones that only inherited it
+  const modelTotals = {};
+  for(const g of st.modelSegs)
+    if(g.model) modelTotals[g.model] = (modelTotals[g.model] || 0) + g.count;
+  const modelCounts = kv(modelTotals).sort((a,b)=>b[1]-a[1]);
   const created = st.firstTs, updated = st.lastTs;
   return {
     id: id,
@@ -1415,6 +1523,10 @@ function jsFinish(st, id, wsFallback, size){
     ws: workspaceLabel(st.cwd) || wsFallback || '未知',
     model: models.length ? models[0][0] : null,
     runtimeModels: models.slice(0, 4),
+    modelCounts: modelCounts.length ? modelCounts : models,
+    modelSegments: st.modelSegs,
+    modelSegmentsTruncated: st.modelSegsTruncated,
+    modelSwitches: st.modelSwitches,
     status: '—',
     thought: null,
     config: {mode:null, interaction:null, welcome:null, permission:null, source:null, thought:null,
@@ -1974,6 +2086,8 @@ function foldAction(rootEl, target){
   const closest = sel => target && target.closest && target.closest(sel);
   const chip = closest('.kinds .tag');
   if(chip){ toggleKind(chip); return true; }
+  const modelChip = closest('[data-model]');
+  if(modelChip){ toggleModel(modelChip.dataset.model || ''); return true; }
   const head = closest('.th .hd');
   if(head){ toggleFold(head); return true; }
   const all = closest('[data-act="th-all"]');
