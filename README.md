@@ -116,6 +116,14 @@ File API 完成，刷新页面即回到无数据状态。
 - 模型泳道依赖逐条记录里的 `requestModelName` / `model` 字段。若载入的是旧版 `data.json`
   快照或不含这些字段的记录，页面会降级成「按记录数占比」色条并明确标注无法还原切换顺序。
   模型字段只从每条记录前 1.5 KB 提取，因此正文被预算截断也不影响。切换段最多保留 100 段并会提示。
+- 工具结果的 `status` 按四类处理（大小写不敏感）：`completed / success / ok` 为正常；
+  `error / failed / failure / exception / timeout / cancelled …` 记为「报错」；
+  `incomplete / partial / truncated / interrupted` 记为「未完成」；
+  其他非空值记为「状态未识别」并列出具体值，**不再静默算作报错**，也不缺失字段。
+  快路径（记录前 1.5 KB 正则）与完整 `JSON.parse` 回退共用同一套分类，
+  「只看有异常结果」筛选覆盖后三类。
+- `toolCalls` 数的是 `function_call` 记录，`toolErrors` 数的是 `function_call_result` 记录，
+  两者尚未用 `callId` 配对，所以「N 次调用 · M 次报错」不能严格读作「N 次调用里的 M 次」。
 - **本仓库只有一个页面，不含任何扫描脚本**。解析全部在浏览器里完成，也就不需要
   先在本机跑脚本、更不会生成任何中间文件。如果你手上已经有一份 `data.json` 快照
   （结构同页面内嵌的数据），可以直接拖进页面载入。
