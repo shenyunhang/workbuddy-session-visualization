@@ -116,3 +116,15 @@ File API 完成，刷新页面即回到无数据状态。
 - 路径脱敏：本机 home 目录与系统用户名在显示时自动替换为 `~` / `<user>`；会话记录原文、工具与模型名称、
   工作目录、标题，以及「系统提示与工具」里的整段提示模板都会经过同一套脱敏，截图也不会泄露
 - 本仓库不含任何个人数据，可安全公开
+
+## 开发验证
+
+源码仓库里保留三套回归测试，模板改动后应全部跑通：
+
+- `node smoke-test.js`：模板语法、静态隐私扫描、纯逻辑与渲染字符串断言（Node VM + DOM 桩）
+- `node browser-test.js`：浏览器侧解析、缓存续解析、目录选择、拖放保护等流程（Node VM + DOM 桩）
+- `python real-browser-test.py`：**真实 Chromium** 端到端验收，覆盖 `innerHTML` 解析、焦点移交、
+  滚动、aria 状态与事件冒泡；需要 `pip install playwright`，可用 `WB_CHROME` 指定浏览器路径
+
+`python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试加载它），
+`python build.py` 从模板重建这份不含数据的部署页。
