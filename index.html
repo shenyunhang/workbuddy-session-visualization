@@ -73,9 +73,13 @@
     color:var(--txt2);cursor:pointer;font-family:inherit;font-size:16px}
   .dclose:hover{border-color:var(--blue);color:var(--txt)}
   /* lives outside #d-body so repainting the event list never steals focus */
-  .evtoolbar{display:flex;gap:8px;align-items:center;padding:10px 20px 0;flex:none}
+  .evtoolbar{display:flex;gap:8px;align-items:center;padding:10px 20px 0;flex:none;flex-wrap:wrap}
   .evtoolbar input{flex:1;min-width:0}
+  #ev-hit-count{min-width:52px;text-align:center}
   mark{background:rgba(245,165,36,.3);color:inherit;border-radius:2px;padding:0 1px}
+  mark.current,.ev.current mark{background:var(--amber);color:#1a1d24}
+  .ev.current{background:rgba(91,140,255,.12);border-radius:6px;
+    box-shadow:0 0 0 1px rgba(91,140,255,.35)}
   .dbody{overflow:auto;padding:16px 20px 40px;flex:1}
   .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 14px;margin-bottom:18px}
   .meta div{font-size:12px;color:var(--txt2)}
@@ -314,13 +318,16 @@
   </div>
   <div class="evtoolbar">
     <input type="text" id="ev-q" placeholder="在当前会话的事件流里查找…" aria-label="在事件流里查找">
+    <button type="button" class="btn" id="ev-prev" aria-label="上一个匹配" title="上一个匹配（Shift+Enter）">↑</button>
+    <span class="tiny" id="ev-hit-count"></span>
+    <button type="button" class="btn" id="ev-next" aria-label="下一个匹配" title="下一个匹配（Enter）">↓</button>
     <button type="button" class="btn" id="ev-q-clear">清除</button>
   </div>
   <div class="dbody" id="d-body"></div>
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793848880213};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793855614275};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -726,6 +733,8 @@ let hiddenKinds = new Set(); // event kinds the reader filtered out
 let expandedKeys = new Set(); // stable ids of expanded raw records in this session
 const EV_STEP = 100;         // events rendered per page, and records pulled per re-parse
 let evShown = EV_STEP, evCurId = null;
+let evHitIndex = 0;          // which matching event is the current jump target
+let evScrollPending = false; // scroll on an explicit jump, not on every keystroke
 /* Resuming a parse inserts records and re-sorts the events, so array indexes
    are not stable. seq is the file-relative line number; fall back to the old
    descriptor for payloads produced before seq existed. */
@@ -794,7 +803,7 @@ function previewHtml(raw, q){
 /* One event row. Deriving expansion and visibility from state means a full
    repaint (paging, resuming a parse, searching) restores exactly what was on
    screen. i is the index in cur.events, never the index in a filtered view. */
-function eventHtml(e, i, q){
+function eventHtml(e, i, q, isCurrent){
   const raw = e.raw || '';
   const tag = esc(KIND_LABEL[e.k] || e.k);
   const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
@@ -812,7 +821,8 @@ function eventHtml(e, i, q){
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
             +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
     : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>';
-  return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'
+  return '<div class="ev'+(isCurrent?' current':'')+'" data-k="'+esc(e.k)+'"'
+    +(isCurrent?' data-current="1"':'')+'><div class="ts">'
     +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
     +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
     +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
@@ -820,21 +830,41 @@ function eventHtml(e, i, q){
     + body + '</div></div>';
 }
 
+/* Shared by the renderer and the jump buttons so both agree on which rows are
+   matches. Each candidate keeps its original index in cur.events: data-i must
+   not become an index into the filtered view. */
+function drawerEventCandidates(s, q){
+  const out = [];
+  (s.events||[]).forEach((e, i)=>{
+    if(hiddenKinds.has(e.k)) return;
+    if(!q || (e.raw||'').toLowerCase().includes(q)
+       || String(KIND_LABEL[e.k] || e.k).toLowerCase().includes(q)) out.push({e: e, i: i});
+  });
+  return out;
+}
+function updateEventSearchControls(q, matched){
+  const has = !!(q && matched);
+  const count = $('ev-hit-count');
+  if(count) count.textContent = q ? (matched ? (evHitIndex+1)+' / '+matched : '无匹配') : '';
+  const prev = $('ev-prev'), next = $('ev-next');
+  if(prev) prev.disabled = !has;
+  if(next) next.disabled = !has;
+}
 function drawerEventsHtml(s){
   const kinds = s.typeCounts || [];
   const evAll = s.events || [];
   const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
   const cutCount = evAll.filter(e=>e.cut).length;
   const evCount = evAll.length;
-  // keep the original index on every candidate: data-i must address cur.events,
-  // not the filtered view, or expanding a search result would open the wrong row
-  const candidates = [];
-  evAll.forEach((e, i)=>{
-    if(hiddenKinds.has(e.k)) return;
-    if(!q || (e.raw||'').toLowerCase().includes(q)
-       || String(KIND_LABEL[e.k] || e.k).toLowerCase().includes(q)) candidates.push({e: e, i: i});
-  });
+  const candidates = drawerEventCandidates(s, q);
   const matched = candidates.length;
+  if(q && matched){
+    if(evHitIndex >= matched) evHitIndex = 0;
+    // a jump target past the current page must still be rendered
+    const needed = Math.ceil((evHitIndex + 1) / EV_STEP) * EV_STEP;
+    if(needed > evShown) evShown = needed;
+  } else if(!q) evHitIndex = 0;
+  updateEventSearchControls(q, matched);
   const shown = Math.min(matched, evShown);
   let html = q
     ? '<h2>事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）</h2>'
@@ -858,7 +888,8 @@ function drawerEventsHtml(s){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += candidates.slice(0, shown).map(c=>eventHtml(c.e, c.i, q)).join('')
+  html += candidates.slice(0, shown).map((c, pos)=>
+    eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('')
     || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>';
   // only the records dropped by the per-session cap are still on disk; using
   // records - events over-counted records without a timestamp
@@ -884,7 +915,7 @@ function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   // switching sessions is the only thing that should clear the reader's view
   if(cur !== s){
-    expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP;
+    expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP; evHitIndex = 0;
     if($('ev-q')) $('ev-q').value = '';
   }
   cur = s; evCurId = id;
@@ -908,6 +939,25 @@ function openDrawer(id){
     if(box.focus) box.focus();
   }
   drawerOpen = true;
+  scrollToCurrentHit();
+}
+/* Only an explicit jump should move the viewport; repainting on every keystroke
+   must not yank the reader away from the search field. */
+function scrollToCurrentHit(){
+  if(!evScrollPending) return;
+  const body = $('d-body');
+  const node = body && body.querySelector && body.querySelector('.ev.current');
+  if(node && node.scrollIntoView) node.scrollIntoView({block:'center'});
+}
+function moveEventHit(delta){
+  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+  if(!q || !cur) return;
+  const matched = drawerEventCandidates(cur, q).length;
+  if(!matched) return;
+  evHitIndex = (evHitIndex + delta + matched) % matched;
+  evScrollPending = true;
+  openDrawer(cur.id);
+  evScrollPending = false;
 }
 
 /* ---------- privacy: strip the local home path / account name from everything shown ---------- */
@@ -1593,35 +1643,57 @@ function rememberUI(h){
     if(fg) fg.style.display = 'none';
   }
 }
-async function pickDir(opts){
-  const st = $('filestatus');
-  let root = (opts && opts.useCached) ? await idbGet(IDB_KEY) : null;
-  if(root){
-    let perm = await rootPerm(root);
-    if(perm !== 'granted' && root.requestPermission){
-      try { perm = await root.requestPermission({mode: 'read'}); } catch(e){ perm = 'none'; }
-    }
-    if(perm !== 'granted') root = null;
+/* Reuse a remembered directory handle only when its permission is still
+   granted; a rejected prompt falls through to a fresh picker. */
+async function cachedRoot(useCached){
+  const root = useCached ? await idbGet(IDB_KEY) : null;
+  if(!root) return null;
+  let perm = await rootPerm(root);
+  if(perm !== 'granted' && root.requestPermission){
+    try { perm = await root.requestPermission({mode:'read'}); }
+    catch(e){ perm = 'none'; }
   }
-  if(!root){
+  return perm === 'granted' ? root : null;
+}
+async function pickFreshRoot(st){
   if(!window.showDirectoryPicker){
     // Firefox / Safari: fall back to the directory input, which does enumerate
     // everything, so warn first instead of looking broken
     st.innerHTML = '当前浏览器不支持目录选择器（建议改用 Chrome / Edge）。即将打开文件夹选择，'
       +'请<b>直接选中 projects 目录</b>而不是整个 .workbuddy —— 后者有十几万个文件，会卡住。';
     if($('dirpick').click) $('dirpick').click();
-    return;
+    return null;
   }
   st.textContent = '请在弹出的对话框里选中 ' + osInfo().dir
     + '（也可以直接选你的用户目录，会自动进入 .workbuddy）…';
-  try { root = await openPicker(); }
+  try { return await resolveRoot(await openPicker()); }
   catch(err){
     st.innerHTML = err && err.name === 'AbortError' ? '已取消选择'
       : '<span style="color:'+C.amber+'">目录选择器不可用：'+esc(err.message)
         +'。请改用 Chrome / Edge 打开本页。</span>';
-    return;
+    return null;
   }
-  root = await resolveRoot(root);
+}
+async function handlesToFiles(got){
+  const files = [];
+  for(const x of got.jsonl){
+    const f = await x.handle.getFile();
+    try { f.__wbPath = 'projects/' + x.dir + '/' + x.name; } catch(e){}
+    files.push(f);
+  }
+  for(const x of got.prod){
+    const f = await x.handle.getFile();
+    try { f.__wbPath = 'cache/conversation-product-spill/' + x.name; } catch(e){}
+    files.push(f);
+  }
+  return files;
+}
+async function pickDir(opts){
+  const st = $('filestatus');
+  let root = await cachedRoot(opts && opts.useCached);
+  if(!root){
+    root = await pickFreshRoot(st);
+    if(!root) return;           // unsupported browser, cancelled, or unavailable
   }
   st.textContent = '已选中目录，正在定位 projects …';
   let got;
@@ -1639,18 +1711,7 @@ async function pickDir(opts){
     await idbSet(IDB_KEY, root);
     rememberUI(await idbGet(IDB_KEY));
   }
-  const files = [];
-  for(const x of got.jsonl){
-    const f = await x.handle.getFile();
-    try { f.__wbPath = 'projects/' + x.dir + '/' + x.name; } catch(e){}
-    files.push(f);
-  }
-  for(const x of got.prod){
-    const f = await x.handle.getFile();
-    try { f.__wbPath = 'cache/conversation-product-spill/' + x.name; } catch(e){}
-    files.push(f);
-  }
-  return startIngest(files);
+  return startIngest(await handlesToFiles(got));
 }
 
 async function filesFromDrop(dt){
@@ -1914,9 +1975,18 @@ $('d-close').onclick = closeDrawer;
 /* the event-stream search field is static, so a repaint cannot steal its focus */
 function refreshEventSearch(){
   evShown = EV_STEP;
+  evHitIndex = 0;
   if(cur) openDrawer(cur.id);
 }
 $('ev-q').oninput = refreshEventSearch;
+$('ev-q').onkeydown = e=>{
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    moveEventHit(e.shiftKey ? -1 : 1);
+  }
+};
+$('ev-prev').onclick = ()=>moveEventHit(-1);
+$('ev-next').onclick = ()=>moveEventHit(1);
 $('ev-q-clear').onclick = ()=>{
   $('ev-q').value = '';
   refreshEventSearch();
