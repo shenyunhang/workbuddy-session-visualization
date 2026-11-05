@@ -320,7 +320,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793845346489};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793848880213};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -335,32 +335,50 @@ const ESC_MAP = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ESC_MAP[c]);
 const fmtSize = n => n==null ? '—' : (n>1024 ? (n/1024).toFixed(1)+'K 字符' : n+' 字符');
 const RAW_PREVIEW = 240;
+const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/* Highlight search hits after escaping, so neither the markup nor a stray
+   regex metacharacter in the reader's query can break the output. */
+function highlightText(text, q){
+  if(!q) return esc(text);
+  const re = new RegExp(escapeRegExp(q), 'gi');
+  let out = '', last = 0, m;
+  while((m = re.exec(text)) !== null){
+    if(!m[0].length){ re.lastIndex++; continue; }
+    out += esc(text.slice(last, m.index)) + '<mark>'+esc(m[0])+'</mark>';
+    last = m.index + m[0].length;
+  }
+  return out + esc(text.slice(last));
+}
 /* A multi-MB tool result can contain tens of thousands of JSON tokens. Giving
    each its own <span> freezes the tab, so colour only a bounded prefix and a
    bounded number of tokens; the rest is still emitted, as escaped plain text,
    so the full record stays visible and nothing is truncated. */
 const HL_CHARS = 65536, HL_TOKENS = 1200;
-function hlTokens(raw){
+function hlTokens(raw, q){
   const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?)|(true|false|null)/g;
+  // q is optional: without it E is plain esc(), so the initial parse path is
+  // unchanged. With it, hits inside tokens and gaps get <mark> but the span
+  // structure stays intact (escaping always happens before wrapping).
+  const E = t => highlightText(t, q);
   let out = '', last = 0, m, n = 0;
   while(n < HL_TOKENS && (m = re.exec(raw)) !== null){
-    out += esc(raw.slice(last, m.index));
+    out += E(raw.slice(last, m.index));
     if(m[1] !== undefined){
-      const s = esc(m[1]);
-      out += m[2] ? '<span class="jk">'+s+'</span>'+esc(m[2]) : '<span class="js">'+s+'</span>';
+      const s = E(m[1]);
+      out += m[2] ? '<span class="jk">'+s+'</span>'+E(m[2]) : '<span class="js">'+s+'</span>';
     } else if(m[3] !== undefined){
-      out += '<span class="jn">'+esc(m[3])+'</span>';
+      out += '<span class="jn">'+E(m[3])+'</span>';
     } else {
-      out += '<span class="jb">'+esc(m[4])+'</span>';
+      out += '<span class="jb">'+E(m[4])+'</span>';
     }
     last = m.index + m[0].length;
     n++;
   }
-  return out + esc(raw.slice(last));
+  return out + E(raw.slice(last));
 }
-function jsonHl(raw){
-  return raw.length <= HL_CHARS ? hlTokens(raw)
-    : hlTokens(raw.slice(0, HL_CHARS)) + esc(raw.slice(HL_CHARS));
+function jsonHl(raw, q){
+  return raw.length <= HL_CHARS ? hlTokens(raw, q)
+    : hlTokens(raw.slice(0, HL_CHARS), q) + highlightText(raw.slice(HL_CHARS), q);
 }
 const C = {blue:'#5b8cff',teal:'#2dd4bf',amber:'#f5a524',red:'#f2555a',violet:'#a78bfa',gray:'#64748b',
   green:'#639922',pink:'#d4537e'};
@@ -472,7 +490,12 @@ function compute(){
   days = [...dayMap.values()].sort((a,b)=>a.ms-b.ms);
 
   hours = new Array(24).fill(0);
-  S.forEach(s=>(s.events||[]).forEach(e=>{ if(e.k==='user'||e.k==='assistant') hours[new Date(e.t).getHours()]++; }));
+  S.forEach(s=>(s.events||[]).forEach(e=>{
+    // a record with no timestamp inherits one for ordering, or gets 0; either
+    // way it must not be counted as real activity in a particular hour
+    if((e.k==='user'||e.k==='assistant') && !e.noTs && e.t)
+      hours[new Date(e.t).getHours()]++;
+  }));
 
   modelCount = {}; toolCount = {}; wsCount = {};
   S.forEach(s=>{
@@ -758,18 +781,6 @@ function drawerMetaHtml(s){
   return html;
 }
 
-const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function highlightText(text, q){
-  if(!q) return esc(text);
-  const re = new RegExp(escapeRegExp(q), 'gi');
-  let out = '', last = 0, m;
-  while((m = re.exec(text)) !== null){
-    if(!m[0].length){ re.lastIndex++; continue; }
-    out += esc(text.slice(last, m.index)) + '<mark>'+esc(m[0])+'</mark>';
-    last = m.index + m[0].length;
-  }
-  return out + esc(text.slice(last));
-}
 /* A match can sit far past the 240-character preview. Centre the window on
    the first hit so the search result is actually visible without expanding. */
 function previewHtml(raw, q){
@@ -791,7 +802,7 @@ function eventHtml(e, i, q){
   const expanded = expandable && expandedKeys.has(evKey(e));
   const body = raw
     ? '<pre class="raw'+(expanded?' open':'')+'" data-i="'+i+'"'+(expanded?' data-full="1"':'')+'>'
-      + (expanded ? jsonHl(raw) : previewHtml(raw, q))
+      + (expanded ? jsonHl(raw, q) : previewHtml(raw, q))
       + '</pre>'
       + (expandable
           ? '<div class="more" tabindex="0" role="button" aria-expanded="'+(expanded?'true':'false')+'">'
@@ -801,8 +812,7 @@ function eventHtml(e, i, q){
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
             +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
     : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>';
-  const hidden = hiddenKinds.has(e.k) ? ' style="display:none"' : '';
-  return '<div class="ev" data-k="'+esc(e.k)+'"'+hidden+'><div class="ts">'
+  return '<div class="ev" data-k="'+esc(e.k)+'"><div class="ts">'
     +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
     +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
     +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
@@ -820,6 +830,7 @@ function drawerEventsHtml(s){
   // not the filtered view, or expanding a search result would open the wrong row
   const candidates = [];
   evAll.forEach((e, i)=>{
+    if(hiddenKinds.has(e.k)) return;
     if(!q || (e.raw||'').toLowerCase().includes(q)
        || String(KIND_LABEL[e.k] || e.k).toLowerCase().includes(q)) candidates.push({e: e, i: i});
   });
@@ -827,11 +838,15 @@ function drawerEventsHtml(s){
   const shown = Math.min(matched, evShown);
   let html = q
     ? '<h2>事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）</h2>'
-    : '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
+    : '<h2>事件流（已显示 '+shown+' / '+matched+' 条'
       +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
   if(q){
     html += '<div class="tiny" style="margin-bottom:8px">仅在当前已载入的 '+evCount
       +' 条事件中查找；磁盘上未解析的记录需先点「从文件继续解析」。</div>';
+  }
+  if(!q && hiddenKinds.size){
+    html += '<div class="tiny" style="margin-bottom:8px">已隐藏 '+hiddenKinds.size
+      +' 类事件；点上方的类型标签可恢复显示。</div>';
   }
   if(kinds.length){
     html += '<div class="kinds">'+kinds.map(([k,c])=>
@@ -1796,14 +1811,13 @@ async function ingestFiles(files){
 /* One action per function, so pointer and keyboard activation share exactly
    the same behaviour. Assigning onkeydown (not addEventListener) also keeps
    repeated repaints from stacking handlers. */
-function toggleKind(chip, rootEl){
+function toggleKind(chip){
   const k = chip.dataset.kind;
   if(hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
-  chip.classList.toggle('off', hiddenKinds.has(k));
-  if(chip.setAttribute) chip.setAttribute('aria-pressed', String(!hiddenKinds.has(k)));
-  rootEl.querySelectorAll('.ev').forEach(r=>{
-    r.style.display = hiddenKinds.has(r.dataset.k) ? 'none' : '';
-  });
+  // The renderer is the single source of truth: it applies kind filtering and
+  // search together, so the displayed match count can never include rows the
+  // reader has hidden. Repainting also restores chips and aria state.
+  if(cur) openDrawer(cur.id);
 }
 function toggleFold(head){
   const box = head.parentElement; box.classList.toggle('on');
@@ -1836,13 +1850,14 @@ function toggleRaw(row){
   };
   if(pre.dataset.full){ finish(); return; }
   const inline = cur.events[idx] && cur.events[idx].raw;
-  if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline); pre.dataset.full = '1'; }
+  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
+  if(inline && inline.length > RAW_PREVIEW){ pre.innerHTML = jsonHl(inline, q); pre.dataset.full = '1'; }
   finish();
 }
 function foldAction(rootEl, target){
   const closest = sel => target && target.closest && target.closest(sel);
   const chip = closest('.kinds .tag');
-  if(chip){ toggleKind(chip, rootEl); return true; }
+  if(chip){ toggleKind(chip); return true; }
   const head = closest('.th .hd');
   if(head){ toggleFold(head); return true; }
   const all = closest('[data-act="th-all"]');
@@ -2000,24 +2015,23 @@ function foldItem(title, meta, body){
     +'<div class="pv">'+esc(text.slice(0,300))+(text.length>300?'…':'')+'</div>'
     +'<div class="bd">'+esc(text)+'</div></div>';
 }
-function renderPrompts(){
-  if(!P.ok){
-    $('p-src').innerHTML = '<span style="color:'+C.amber+'">未找到产品配置：'+esc(P.error||'未知原因')+'</span>';
-    return;
-  }
+function renderPromptSource(){
   const m = P.meta || {};
   $('p-src').innerHTML = esc(m.productName||'')+' · genie '+esc(m.genieVersion||'?')
     +' · commit '+esc((m.commit||'').slice(0,8))+' · '+esc((m.date||'').slice(0,10))
     +' · 本地快照 '+m.snapshots+' 个<div class="pathbox">'+esc(m.file||'')+'</div>';
+}
+function renderPromptKpis(){
   $('p-kpis').innerHTML = [
     ['Agent', (P.agents||[]).length],
     ['工具定义', (P.tools||[]).length],
     ['提示模板', (P.prompts||[]).length],
     ['子代理', (P.subagents||[]).length],
     ['模型', (P.models||[]).length],
-    ['提示文本', Math.round((P.prompts||[]).reduce((a,x)=>a+x.len,0)/1000)+'K 字'],
+    ['提示文本', Math.round((P.prompts||[]).reduce((a,x)=>a+(x.len||0),0)/1000)+'K 字'],
   ].map(([k,v])=>'<div class="kpi"><div class="v">'+v+'</div><div class="k">'+k+'</div></div>').join('');
-
+}
+function renderAgents(){
   $('p-agents').innerHTML = (P.agents||[]).map(a=>{
     const meta = ((a.modelTags||[]).length?a.modelTags.join('/')+' · ':'')+((a.tools||[]).length)+' 个工具';
     return '<div class="th"><div class="hd" tabindex="0" role="button"><span><b>'+esc(a.name||'?')+'</b>'
@@ -2025,34 +2039,55 @@ function renderPrompts(){
       +'<div class="pv">'+esc((a.prompt||'').slice(0,300))+((a.prompt||'').length>300?'…':'')+'</div>'
       +'<div class="bd">'+esc(a.prompt||'（该 agent 无 instructions 文本）')+'</div></div>';
   }).join('');
-
-  const drawTools = ()=>{
-    const q = ($('p-tool-q').value||'').trim().toLowerCase();
-    const list = (P.tools||[]).filter(t=>!q || (t.name||'').toLowerCase().includes(q)
-      || (t.prompt||'').toLowerCase().includes(q));
-    $('p-tools').innerHTML = list.map(t=>foldItem(t.name, null, t.prompt)).join('')
-      || '<div class="empty">没有匹配的工具</div>';
-  };
-  const drawPrompts = ()=>{
-    const q = ($('p-prompt-q').value||'').trim().toLowerCase();
-    const list = (P.prompts||[]).filter(p=>!q || p.name.toLowerCase().includes(q)
-      || p.text.toLowerCase().includes(q));
-    $('p-prompts').innerHTML = list.slice(0,60).map(p=>foldItem(p.name, p.len+' 字', p.text)).join('')
-      + (list.length>60 ? '<div class="tiny" style="margin-top:8px">匹配 '+list.length+' 条，仅渲染前 60 条，请用搜索缩小范围</div>' : '')
-      || '<div class="empty">没有匹配的模板</div>';
-  };
-  drawTools(); drawPrompts();
-  // assignment, not addEventListener: renderPrompts runs on every tab switch
-  // and every full repaint, so listeners would otherwise stack up and fire the
-  // same redraw N times per keystroke
-  $('p-tool-q').oninput = drawTools;
-  $('p-prompt-q').oninput = drawPrompts;
-
-  $('p-sub').innerHTML = (P.subagents||[]).map(s=>foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
+}
+function toolListHtml(q){
+  const list = (P.tools||[]).filter(t=>!q || (t.name||'').toLowerCase().includes(q)
+    || (t.prompt||'').toLowerCase().includes(q));
+  return list.map(t=>foldItem(t.name, null, t.prompt)).join('')
+    || '<div class="empty">没有匹配的工具</div>';
+}
+function promptListHtml(q){
+  // a snapshot can be missing text/len; treat those as empty rather than
+  // crashing the whole view on p.text.toLowerCase()
+  const list = (P.prompts||[]).filter(p=>!q || String(p.name||'').toLowerCase().includes(q)
+    || String(p.text||'').toLowerCase().includes(q));
+  return list.slice(0,60).map(p=>foldItem(p.name, (p.len||0)+' 字', p.text)).join('')
+    + (list.length>60 ? '<div class="tiny" style="margin-top:8px">匹配 '+list.length
+        +' 条，仅渲染前 60 条，请用搜索缩小范围</div>' : '')
+    || '<div class="empty">没有匹配的模板</div>';
+}
+function renderToolList(){
+  $('p-tools').innerHTML = toolListHtml(($('p-tool-q').value||'').trim().toLowerCase());
+}
+function renderPromptList(){
+  $('p-prompts').innerHTML = promptListHtml(($('p-prompt-q').value||'').trim().toLowerCase());
+}
+function renderSubagents(){
+  $('p-sub').innerHTML = (P.subagents||[]).map(s=>
+    foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
     || '<div class="empty">无内置子代理</div>';
-
+}
+/* Stable module-level callbacks plus onclick/onkeydown assignment: renderPrompts
+   runs on every tab switch and full repaint, so neither may accumulate. */
+function bindPromptHandlers(){
+  $('p-tool-q').oninput = renderToolList;
+  $('p-prompt-q').oninput = renderPromptList;
   ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ bindFoldHandlers($(id)); });
 }
+function renderPrompts(){
+  if(!P.ok){
+    $('p-src').innerHTML = '<span style="color:'+C.amber+'">未找到产品配置：'+esc(P.error||'未知原因')+'</span>';
+    return;
+  }
+  renderPromptSource();
+  renderPromptKpis();
+  renderAgents();
+  renderToolList();
+  renderPromptList();
+  renderSubagents();
+  bindPromptHandlers();
+}
+
 document.querySelectorAll('.tab').forEach(t=>{
   t.onclick = ()=>{
     document.querySelectorAll('.tab').forEach(o=>o.classList.remove('on'));
