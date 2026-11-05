@@ -45,6 +45,8 @@
     white-space:nowrap;cursor:pointer;user-select:none}
   th:hover{color:var(--txt)}
   th.on{color:var(--blue)}
+  th.on[data-dir="asc"]::after{content:" ▴"}
+  th.on[data-dir="desc"]::after{content:" ▾"}
   td{padding:9px 10px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
   tr.row{cursor:pointer}
   tr.row:hover td,tr.row:focus-visible td{background:var(--panel2)}
@@ -70,6 +72,10 @@
     background:var(--panel2);border:1px solid var(--line2);border-radius:8px;
     color:var(--txt2);cursor:pointer;font-family:inherit;font-size:16px}
   .dclose:hover{border-color:var(--blue);color:var(--txt)}
+  /* lives outside #d-body so repainting the event list never steals focus */
+  .evtoolbar{display:flex;gap:8px;align-items:center;padding:10px 20px 0;flex:none}
+  .evtoolbar input{flex:1;min-width:0}
+  mark{background:rgba(245,165,36,.3);color:inherit;border-radius:2px;padding:0 1px}
   .dbody{overflow:auto;padding:16px 20px 40px;flex:1}
   .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 14px;margin-bottom:18px}
   .meta div{font-size:12px;color:var(--txt2)}
@@ -306,11 +312,15 @@
     <div class="tiny" id="d-sub"></div>
     <button type="button" class="dclose" id="d-close" aria-label="关闭会话详情">✕</button>
   </div>
+  <div class="evtoolbar">
+    <input type="text" id="ev-q" placeholder="在当前会话的事件流里查找…" aria-label="在事件流里查找">
+    <button type="button" class="btn" id="ev-q-clear">清除</button>
+  </div>
   <div class="dbody" id="d-body"></div>
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793790126791};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793845346489};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -548,7 +558,8 @@ function renderFilters(){
   if(keep.mode && mde.includes(keep.mode)) $('f-mode').value = keep.mode;
 }
 
-let sortKey = 'updated', page = 0, PAGE = 40;
+let sortKey = 'updated', sortDir = 1, page = 0, PAGE = 40;
+const isTextSortKey = k => k === 'title' || k === 'ws' || k === 'model';
 /* Searching raw event payloads is opt-in: with budget 0 a single session can
    hold megabytes of JSON. Cache the answer per (session, query), debounce the
    input, require a minimum term length, and bound how much text one session
@@ -596,27 +607,41 @@ function filtered(){
       if(!hay.includes(q) && !(deep && rawMatch(s, q))) return false;
     }
     return true;
-  }).sort((a,b)=>{
-    // text columns must not fall through to the numeric branch: they used to
-    // silently sort by file size while the header claimed "title"
-    if(sortKey==='title' || sortKey==='ws' || sortKey==='model'){
-      const v = (o)=> String((sortKey==='title'?o.title:sortKey==='ws'?o.ws:o.model)||'').toLowerCase();
-      return v(a).localeCompare(v(b),'zh-CN') || (b.updated||0)-(a.updated||0);
-    }
+  }).sort(compareSessions);
+}
+/* Numeric columns read best newest/largest first, text columns A→Z; sortDir
+   flips whichever default the active column uses. Keeping the comparison here
+   makes the header, the dropdown and the arrow agree on one source of truth. */
+function compareSessions(a, b){
+  let d;
+  if(isTextSortKey(sortKey)){
+    const v = o => String((sortKey==='title'?o.title:sortKey==='ws'?o.ws:o.model)||'').toLowerCase();
+    d = v(a).localeCompare(v(b),'zh-CN') || (b.updated||0)-(a.updated||0);
+  } else {
     const g = (o,k)=> k==='updated'?(o.updated||0):k==='created'?(o.created||0):k==='tools'?(o.toolCalls||0)
       :k==='turns'?((o.turnsUser||0)+(o.turnsAssistant||0)):k==='duration'?(o.duration||0)
       :k==='ctx'?((o.ctxSize?o.ctxUsed/o.ctxSize:0)):(o.bytes||0);
-    return g(b,sortKey)-g(a,sortKey);
-  });
+    d = g(b,sortKey)-g(a,sortKey);
+  }
+  return d * sortDir;
 }
-/* keep the header highlight and the dropdown showing the same field: the two
-   controls set sortKey independently, so both go through here */
-function setSort(k){
-  sortKey = k || 'updated';
+function sortAscending(){
+  return isTextSortKey(sortKey) ? sortDir === 1 : sortDir === -1;
+}
+/* Clicking the active column toggles its direction; choosing a different
+   column resets to that column's natural default. */
+function setSort(k, toggle){
+  const next = k || 'updated';
+  if(toggle && next === sortKey) sortDir = -sortDir;
+  else { sortKey = next; sortDir = 1; }
+  const ascending = sortAscending();
   document.querySelectorAll('th[data-sort]').forEach(o=>{
     const on = o.dataset.sort === sortKey;
     o.classList.toggle('on', on);
-    if(o.setAttribute) o.setAttribute('aria-sort', on ? 'descending' : 'none');
+    if(o.setAttribute){
+      o.setAttribute('aria-sort', on ? (ascending ? 'ascending' : 'descending') : 'none');
+      o.setAttribute('data-dir', on ? (ascending ? 'asc' : 'desc') : '');
+    }
   });
   const sel = $('f-sort');
   if(sel) sel.value = sortKey;
@@ -647,7 +672,7 @@ function isActivateKey(e){
   return e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar';
 }
 document.querySelectorAll('th[data-sort]').forEach(th=>{
-  const activate = ()=>{ setSort(th.dataset.sort); renderList(true); };
+  const activate = ()=>{ setSort(th.dataset.sort, true); renderList(true); };
   th.onclick = activate;
   th.onkeydown = e=>{ if(isActivateKey(e)){ e.preventDefault(); activate(); } };
 });
@@ -733,9 +758,32 @@ function drawerMetaHtml(s){
   return html;
 }
 
+const escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function highlightText(text, q){
+  if(!q) return esc(text);
+  const re = new RegExp(escapeRegExp(q), 'gi');
+  let out = '', last = 0, m;
+  while((m = re.exec(text)) !== null){
+    if(!m[0].length){ re.lastIndex++; continue; }
+    out += esc(text.slice(last, m.index)) + '<mark>'+esc(m[0])+'</mark>';
+    last = m.index + m[0].length;
+  }
+  return out + esc(text.slice(last));
+}
+/* A match can sit far past the 240-character preview. Centre the window on
+   the first hit so the search result is actually visible without expanding. */
+function previewHtml(raw, q){
+  if(!q) return esc(raw.slice(0, RAW_PREVIEW)) + (raw.length>RAW_PREVIEW?' …':'');
+  const at = raw.toLowerCase().indexOf(q);
+  if(at < 0) return esc(raw.slice(0, RAW_PREVIEW)) + (raw.length>RAW_PREVIEW?' …':'');
+  const start = Math.max(0, at - 60), end = Math.min(raw.length, start + RAW_PREVIEW);
+  return (start>0?'…':'') + highlightText(raw.slice(start, end), q) + (end<raw.length?' …':'');
+}
+
 /* One event row. Deriving expansion and visibility from state means a full
-   repaint (paging, resuming a parse) restores exactly what was on screen. */
-function eventHtml(e, i){
+   repaint (paging, resuming a parse, searching) restores exactly what was on
+   screen. i is the index in cur.events, never the index in a filtered view. */
+function eventHtml(e, i, q){
   const raw = e.raw || '';
   const tag = esc(KIND_LABEL[e.k] || e.k);
   const meta = fmtSize(e.size) + (e.cut===2 ? ' · 超出预算未内联' : (e.cut===1 ? ' · 已截断' : ''));
@@ -743,7 +791,7 @@ function eventHtml(e, i){
   const expanded = expandable && expandedKeys.has(evKey(e));
   const body = raw
     ? '<pre class="raw'+(expanded?' open':'')+'" data-i="'+i+'"'+(expanded?' data-full="1"':'')+'>'
-      + (expanded ? jsonHl(raw) : esc(raw.slice(0, RAW_PREVIEW)) + (raw.length>RAW_PREVIEW?' …':''))
+      + (expanded ? jsonHl(raw) : previewHtml(raw, q))
       + '</pre>'
       + (expandable
           ? '<div class="more" tabindex="0" role="button" aria-expanded="'+(expanded?'true':'false')+'">'
@@ -765,11 +813,26 @@ function eventHtml(e, i){
 function drawerEventsHtml(s){
   const kinds = s.typeCounts || [];
   const evAll = s.events || [];
+  const q = (($('ev-q') && $('ev-q').value) || '').trim().toLowerCase();
   const cutCount = evAll.filter(e=>e.cut).length;
   const evCount = evAll.length;
-  const shown = Math.min(evCount, evShown);
-  let html = '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
-    +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
+  // keep the original index on every candidate: data-i must address cur.events,
+  // not the filtered view, or expanding a search result would open the wrong row
+  const candidates = [];
+  evAll.forEach((e, i)=>{
+    if(!q || (e.raw||'').toLowerCase().includes(q)
+       || String(KIND_LABEL[e.k] || e.k).toLowerCase().includes(q)) candidates.push({e: e, i: i});
+  });
+  const matched = candidates.length;
+  const shown = Math.min(matched, evShown);
+  let html = q
+    ? '<h2>事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）</h2>'
+    : '<h2>事件流（已显示 '+shown+' / '+evCount+' 条'
+      +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）</h2>';
+  if(q){
+    html += '<div class="tiny" style="margin-bottom:8px">仅在当前已载入的 '+evCount
+      +' 条事件中查找；磁盘上未解析的记录需先点「从文件继续解析」。</div>';
+  }
   if(kinds.length){
     html += '<div class="kinds">'+kinds.map(([k,c])=>
       '<span class="tag'+(hiddenKinds.has(k)?' off':'')+'" data-kind="'+esc(k)+'" tabindex="0" role="button"'
@@ -780,14 +843,14 @@ function drawerEventsHtml(s){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += evAll.slice(0, shown).map((e,i)=>eventHtml(e,i)).join('')
-    || '<div class="empty">该会话没有可展示的事件</div>';
+  html += candidates.slice(0, shown).map(c=>eventHtml(c.e, c.i, q)).join('')
+    || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>';
   // only the records dropped by the per-session cap are still on disk; using
   // records - events over-counted records without a timestamp
   const rest = s.dropped != null ? s.dropped : Math.max(0, (s.records || evCount) - evCount);
-  if(evCount > shown){
+  if(matched > shown){
     html += '<div style="margin-top:12px"><button class="btn" type="button" data-act="ev-more">'
-      +'显示更多已解析事件（还有 '+(evCount - shown)+' 条）</button></div>';
+      +'显示更多已解析事件（还有 '+(matched - shown)+' 条）</button></div>';
   }
   if(rest > 0){
     html += '<div style="margin-top:8px">'
@@ -805,7 +868,10 @@ function drawerEventsHtml(s){
 function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   // switching sessions is the only thing that should clear the reader's view
-  if(cur !== s){ expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP; }
+  if(cur !== s){
+    expandedKeys.clear(); hiddenKinds.clear(); evShown = EV_STEP;
+    if($('ev-q')) $('ev-q').value = '';
+  }
   cur = s; evCurId = id;
   $('d-title').innerHTML = esc(s.title)
     + (s.titleSrc === 'prompt'
@@ -814,12 +880,19 @@ function openDrawer(id){
         ? ' <span class="tag" title="既无 ai-title 也无用户消息">无标题</span>' : ''));
   $('d-sub').innerHTML = esc(s.ws)+' · '+esc(s.model||'未知')+' · '+fmtTime(s.created||0)
     +(s.duration?' · 持续 '+fmtDur(s.duration):'');
-  $('d-body').innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
+  const bodyEl = $('d-body');
+  const keepScroll = bodyEl.scrollTop || 0;
+  bodyEl.innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
+  bodyEl.scrollTop = keepScroll;
   $('drawer').classList.add('on'); $('mask').classList.add('on');
-  if(!drawerOpen) drawerOpener = document.activeElement;
+  // only steal focus when the dialog actually opens; repaints while searching
+  // must leave the keyboard in the static search field
+  if(!drawerOpen){
+    drawerOpener = document.activeElement;
+    const box = $('drawer');
+    if(box.focus) box.focus();
+  }
   drawerOpen = true;
-  const box = $('drawer');
-  if(box.focus) box.focus();
 }
 
 /* ---------- privacy: strip the local home path / account name from everything shown ---------- */
@@ -1598,11 +1671,7 @@ function emptyProduct(err){
   return {ok:false, error:err || '未找到产品配置快照（cache/conversation-product-spill/*.json）',
     meta:{}, agents:[], tools:[], prompts:[], subagents:[], outputStyles:[], models:[]};
 }
-async function ingestFiles(files){
-  const run = ++ingestRun;
-  const st = $('filestatus');
-  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '60', 10) || 60);
-  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '20000', 10));
+function classifyIngestFiles(files){
   const jsonl = [], prod = [], dump = [];
   for(const f of files){
     const p = String((f && (f.webkitRelativePath || f.__wbPath || f.name)) || '').replace(/\\/g, '/');
@@ -1610,6 +1679,97 @@ async function ingestFiles(files){
     else if(/conversation-product-spill\/[^/]+\.json$/i.test(p)) prod.push(f);
     else if(/(^|\/)data\.json$/i.test(p)) dump.push(f);
   }
+  return {jsonl: jsonl, prod: prod, dump: dump};
+}
+function resetIngestBoard(jsonlCount){
+  S = [];
+  P = emptyProduct('正在解析，稍后载入系统提示快照');
+  DATA.generatedAt = Date.now();
+  DATA.root = ''; DATA.rootShown = '';
+  DATA.deploy = false;
+  DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
+    indexedSessions:0, workspaces:0, jsonlFiles:jsonlCount, scanned:0};
+}
+function makeIngestState(run, use, jsonlCount, budget, prod){
+  return {run: run, use: use, jsonlCount: jsonlCount, budget: budget, prod: prod,
+    bytes:0, failed:0, skipped:0, sub:'', cachedBytes:0, maskReady:false,
+    lastPaint:0, lastFull:0};
+}
+function ingestTick(state, done){
+  const pct = Math.round(done / state.use.length * 100);
+  $('progbar').style.width = pct + '%';
+  $('progtxt').textContent = '已解析 ' + S.length + ' / ' + state.use.length + ' 个会话 · '
+    + pct + '% · ' + (state.bytes / 1048576).toFixed(1) + ' MB' + state.sub
+    + (state.failed ? ' · ' + state.failed + ' 个失败' : '')
+    + (state.skipped ? ' · ' + state.skipped + ' 个跳过' : '');
+}
+async function ingestOneFile(state, f, index){
+  if(state.bytes > byteCap()){ state.skipped++; return; }
+  let txt = null;
+  try { txt = await readText(f); } catch(e){ state.failed++; return; }
+  try {
+    const name = String(f.name || '').replace(/\.jsonl$/i, '');
+    const cache = {};
+    const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, state.budget, null,
+      (done, total)=>{
+        // a single file can be tens of MB; show its own progress while it runs
+        state.sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
+        ingestTick(state, index);
+      }, cache);
+    state.sub = '';
+    state.bytes += txt.length;
+    // keep the handle for the no-cache fallback; only sessions that actually
+    // hit the event cap pay the memory cost of holding the split lines
+    try { s.__file = f; } catch(e){}
+    if(cache.pending && cache.pending.length
+       && state.cachedBytes + txt.length <= CACHE_MAX_BYTES){
+      PARSE_CACHE.set(s, cache); state.cachedBytes += txt.length;
+    }
+    if(!state.maskReady && s.cwd){ buildMask(s.cwd); state.maskReady = true; S.forEach(maskSession); }
+    if(state.maskReady) maskSession(s);
+    S.push(s);
+  } catch(e){ state.failed++; }
+  DATA.source.indexedSessions = S.length;
+  DATA.source.scanned = S.length;
+  DATA.source.workspaces = new Set(S.map(x=>x.ws)).size;
+  ingestTick(state, index + 1);
+  // the table and KPIs are cheap, the six charts are not: repaint those often,
+  // redraw the charts only about once a second
+  const now = Date.now();
+  if(now - state.lastPaint > 120){ state.lastPaint = now; compute(); renderMeta(); renderList(false); }
+  if(index === state.use.length - 1 || now - state.lastFull > 900){ state.lastFull = now; renderAll(true); }
+}
+async function loadProductSnapshot(prod, run){
+  let product = P;
+  if(prod.length && run === ingestRun){
+    prod.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
+    try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || P; }
+    catch(e){ product = emptyProduct('产品配置解析失败：' + e.message); }
+  }
+  return product;
+}
+function finishIngest(state, product){
+  P = maskProduct(product);
+  renderAll(true);
+  $('progbar').style.width = '100%';
+  $('cancelbtn').style.display = 'none';
+  const stopped = state.run !== ingestRun;
+  $('filestatus').innerHTML = '<span style="color:' + (stopped ? C.amber : C.teal) + '">'
+    + (stopped ? '已停止' : '完成') + '：' + S.length + ' 个会话 · '
+    + (state.bytes / 1048576).toFixed(1) + ' MB'
+    + (state.jsonlCount > state.use.length
+        ? '（目录内共 ' + state.jsonlCount + ' 个文件，可上调上限）' : '')
+    + (state.failed ? ' · ' + state.failed + ' 个文件读取或解析失败' : '')
+    + (state.skipped ? ' · ' + state.skipped + ' 个文件超出体积上限被跳过' : '')
+    + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
+}
+async function ingestFiles(files){
+  const run = ++ingestRun;
+  const st = $('filestatus');
+  const max = Math.max(1, parseInt(($('maxfiles') && $('maxfiles').value) || '60', 10) || 60);
+  const budget = Math.max(0, parseInt(($('rawbudget') && $('rawbudget').value) || '20000', 10));
+  const classified = classifyIngestFiles(files);
+  const jsonl = classified.jsonl, prod = classified.prod, dump = classified.dump;
   if(!jsonl.length){
     if(dump.length){ st.textContent = '目录里没有 .jsonl，改为载入 data.json …'; readDataFile(dump[0]); return; }
     st.innerHTML = '<span style="color:'+C.amber+'">没找到会话记录（projects/*/*.jsonl）。'
@@ -1618,86 +1778,19 @@ async function ingestFiles(files){
   }
   jsonl.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
   const use = jsonl.slice(0, max);
-
   // reset the board so the first parsed session shows up on an empty table
-  S = [];
-  P = emptyProduct('正在解析，稍后载入系统提示快照');
-  DATA.generatedAt = Date.now();
-  DATA.root = ''; DATA.rootShown = '';
-  DATA.deploy = false;
-  DATA.source = {dbOk:false, browser:true, dbError:'浏览器模式不读取 workbuddy.db',
-    indexedSessions:0, workspaces:0, jsonlFiles:jsonl.length, scanned:0};
-  let maskReady = false, bytes = 0, failed = 0, skipped = 0, sub = '', cachedBytes = 0;
+  resetIngestBoard(jsonl.length);
+  const state = makeIngestState(run, use, jsonl.length, budget, prod);
   st.innerHTML = '找到 ' + jsonl.length + ' 个会话文件，开始解析最新的 ' + use.length + ' 个 …';
   $('prog').style.display = ''; $('progtxt').style.display = ''; $('cancelbtn').style.display = '';
   $('progbar').style.width = '0%';
-  const tick = done=>{
-    const pct = Math.round(done / use.length * 100);
-    $('progbar').style.width = pct + '%';
-    $('progtxt').textContent = '已解析 ' + S.length + ' / ' + use.length + ' 个会话 · '
-      + pct + '% · ' + (bytes / 1048576).toFixed(1) + ' MB' + sub
-      + (failed ? ' · ' + failed + ' 个失败' : '') + (skipped ? ' · ' + skipped + ' 个跳过' : '');
-  };
-  tick(0);
+  ingestTick(state, 0);
   renderAll(true);
-
-  let lastPaint = 0, lastFull = 0;
   for(let i = 0; i < use.length; i++){
     if(run !== ingestRun) break;
-    const f = use[i];
-    if(bytes > byteCap()){ skipped++; continue; }
-    let txt = null;
-    try { txt = await readText(f); } catch(e){ failed++; continue; }
-    try {
-      const name = String(f.name || '').replace(/\.jsonl$/i, '');
-      const cache = {};
-      const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, budget, null,
-        (done, total)=>{
-          // a single file can be tens of MB; show its own progress while it runs
-          sub = total > 40000 ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
-          tick(i);
-        }, cache);
-      sub = '';
-      bytes += txt.length;
-      // keep the handle for the no-cache fallback; only sessions that actually
-      // hit the event cap pay the memory cost of holding the split lines
-      try { s.__file = f; } catch(e){}
-      if(cache.pending && cache.pending.length
-         && cachedBytes + txt.length <= CACHE_MAX_BYTES){
-        PARSE_CACHE.set(s, cache); cachedBytes += txt.length;
-      }
-      if(!maskReady && s.cwd){ buildMask(s.cwd); maskReady = true; S.forEach(maskSession); }
-      if(maskReady) maskSession(s);
-      S.push(s);
-    } catch(e){ failed++; }
-    DATA.source.indexedSessions = S.length;
-    DATA.source.scanned = S.length;
-    DATA.source.workspaces = new Set(S.map(s=>s.ws)).size;
-    tick(i + 1);
-    // the table and KPIs are cheap, the six charts are not: repaint those often,
-    // redraw the charts only about once a second
-    const now = Date.now();
-    if(now - lastPaint > 120){ lastPaint = now; compute(); renderMeta(); renderList(false); }
-    if(i === use.length - 1 || now - lastFull > 900){ lastFull = now; renderAll(true); }
+    await ingestOneFile(state, use[i], i);
   }
-
-  let product = P;
-  if(prod.length && run === ingestRun){
-    prod.sort((a,b)=>(b.lastModified || 0) - (a.lastModified || 0));
-    try { product = jsProduct(JSON.parse(await readText(prod[0])), prod[0].name) || P; }
-    catch(e){ product = emptyProduct('产品配置解析失败：' + e.message); }
-  }
-  P = maskProduct(product);
-  renderAll(true);
-  $('progbar').style.width = '100%';
-  $('cancelbtn').style.display = 'none';
-  const stopped = run !== ingestRun;
-  st.innerHTML = '<span style="color:' + (stopped ? C.amber : C.teal) + '">'
-    + (stopped ? '已停止' : '完成') + '：' + S.length + ' 个会话 · ' + (bytes / 1048576).toFixed(1) + ' MB'
-    + (jsonl.length > use.length ? '（目录内共 ' + jsonl.length + ' 个文件，可上调上限）' : '')
-    + (failed ? ' · ' + failed + ' 个文件读取或解析失败' : '')
-    + (skipped ? ' · ' + skipped + ' 个文件超出体积上限被跳过' : '')
-    + (P.ok ? ' · 系统提示快照已载入' : ' · 未找到系统提示快照') + '</span>';
+  finishIngest(state, await loadProductSnapshot(prod, run));
 }
 
 /* One action per function, so pointer and keyboard activation share exactly
@@ -1803,6 +1896,17 @@ function closeDrawer(){
   drawerOpener = null;
 }
 $('d-close').onclick = closeDrawer;
+/* the event-stream search field is static, so a repaint cannot steal its focus */
+function refreshEventSearch(){
+  evShown = EV_STEP;
+  if(cur) openDrawer(cur.id);
+}
+$('ev-q').oninput = refreshEventSearch;
+$('ev-q-clear').onclick = ()=>{
+  $('ev-q').value = '';
+  refreshEventSearch();
+  const input = $('ev-q'); if(input.focus) input.focus();
+};
 
 /* The first pass stops at JS_MAX_EVENTS so a 23k-record session does not blow
    up memory, but it did already walk every line, so all the statistics are
