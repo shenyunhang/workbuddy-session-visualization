@@ -40,6 +40,11 @@
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt2);border-radius:8px;
     padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
   .btn:hover{border-color:var(--blue);color:var(--txt)}
+  .segctl{display:inline-flex;gap:4px;margin:0 0 8px}
+  .segctl button{font-size:11px;line-height:1.4;padding:3px 9px;border-radius:5px;
+    border:1px solid var(--line2);background:transparent;color:var(--txt3);cursor:pointer}
+  .segctl button:hover{color:var(--txt)}
+  .segctl button.on{color:var(--blue);border-color:var(--blue);background:rgba(91,140,255,.1)}
   table{width:100%;border-collapse:collapse}
   th{text-align:left;font-size:12px;font-weight:500;color:var(--txt3);padding:8px 10px;border-bottom:1px solid var(--line);
     white-space:nowrap;cursor:pointer;user-select:none}
@@ -226,7 +231,11 @@
     </div>
     <div class="card">
       <h2>模型分布</h2>
-      <div class="sub">按会话数统计</div>
+      <div class="sub" id="c-models-sub">按会话主模型统计</div>
+      <div class="segctl" id="c-models-mode">
+        <button type="button" data-mm="sessions" class="on" aria-pressed="true">按会话</button>
+        <button type="button" data-mm="records" aria-pressed="false">按记录</button>
+      </div>
       <div class="chart" id="c-models"></div>
     </div>
     <div class="card">
@@ -260,6 +269,7 @@
         <option value="ws">按工作空间</option>
         <option value="model">按模型</option>
         <option value="tools">按工具调用数</option>
+        <option value="abnormal">按异常结果数</option>
         <option value="turns">按对话轮数</option>
         <option value="duration">按时长</option>
         <option value="ctx">按上下文占用</option>
@@ -336,7 +346,7 @@
 </aside>
 
 <script>
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793871078982};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793876790795};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -508,7 +518,9 @@ function drawCtx(el, buckets){
 
 /* ---------- aggregate (recomputed whenever the session set changes) ---------- */
 const topArr = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value}));
-let days = [], hours = [], modelCount = {}, toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [];
+let days = [], hours = [], modelCount = {}, modelRecordCount = {},
+    toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [];
+let modelMode = 'sessions';   // 'sessions' = one primary model per session, 'records' = all model records
 function compute(){
   const dayMap = new Map();
   S.forEach(s=>{
@@ -526,9 +538,15 @@ function compute(){
       hours[new Date(e.t).getHours()]++;
   }));
 
-  modelCount = {}; toolCount = {}; wsCount = {};
+  modelCount = {}; modelRecordCount = {}; toolCount = {}; wsCount = {};
   S.forEach(s=>{
-    modelCount[s.model||'未知'] = (modelCount[s.model||'未知']||0)+1;
+    const m = s.model||'未知';
+    modelCount[m] = (modelCount[m]||0)+1;
+    // a session that switched models contributes to every model it used;
+    // legacy payloads only have runtimeModels, which is the best available proxy
+    const ml = modelList(s);
+    if(ml.length) ml.forEach(([n,c])=>{ modelRecordCount[n||'未知'] = (modelRecordCount[n||'未知']||0)+(c||0); });
+    else modelRecordCount[m] = (modelRecordCount[m]||0)+1;
     wsCount[s.ws||'未知'] = (wsCount[s.ws||'未知']||0)+1;
     (s.tools||[]).forEach(([n,c])=>{ toolCount[n]=(toolCount[n]||0)+c; });
   });
@@ -588,7 +606,12 @@ function renderMeta(){
 function renderCharts(){
   drawDays($('c-days'), days);
   drawHours($('c-hours'), hours);
-  drawHBar($('c-models'), topArr(modelCount), C.blue);
+  const useRecords = modelMode === 'records';
+  drawHBar($('c-models'), topArr(useRecords ? modelRecordCount : modelCount), C.blue);
+  const modelSub = $('c-models-sub');
+  if(modelSub) modelSub.textContent = useRecords
+    ? '按记录数统计 · 含一次会话中切换过的模型'
+    : '按会话主模型统计 · 每个会话计一次';
   drawHBar($('c-tools'), topArr(toolCount), C.teal);
   drawHBar($('c-size'), sizeTop, C.violet);
   drawCtx($('c-toolcalls'), toolBuckets);
@@ -650,7 +673,7 @@ function filtered(){
     if(ws && s.ws!==ws) return false;
     if(mdl && (s.model||'未知')!==mdl) return false;
     if(mde && modeOf(s)!==mde) return false;
-    if(errOnly && !(s.toolErrors>0 || s.toolIncomplete>0 || s.toolUnknown>0)) return false;
+    if(errOnly && !abnormalCount(s)) return false;
     if(agentOnly && !(s.toolCalls>0)) return false;
     if(thinkOnly && !(s.thinking && s.thinking.length)) return false;
     if(q){
@@ -671,6 +694,7 @@ function compareSessions(a, b){
     d = v(a).localeCompare(v(b),'zh-CN') || (b.updated||0)-(a.updated||0);
   } else {
     const g = (o,k)=> k==='updated'?(o.updated||0):k==='created'?(o.created||0):k==='tools'?(o.toolCalls||0)
+      :k==='abnormal'?abnormalCount(o)
       :k==='turns'?((o.turnsUser||0)+(o.turnsAssistant||0)):k==='duration'?(o.duration||0)
       :k==='ctx'?((o.ctxSize?o.ctxUsed/o.ctxSize:0)):(o.bytes||0);
     d = g(b,sortKey)-g(a,sortKey);
@@ -1277,6 +1301,7 @@ const TOOL_STATUS_OK = ['completed', 'success', 'ok'];
 const TOOL_STATUS_ERROR = ['error', 'failed', 'failure', 'exception', 'timeout',
   'timed_out', 'cancelled', 'canceled', 'aborted'];
 const TOOL_STATUS_INCOMPLETE = ['incomplete', 'partial', 'truncated', 'interrupted'];
+const abnormalCount = s => (s && ((s.toolErrors||0)+(s.toolIncomplete||0)+(s.toolUnknown||0))) || 0;
 function toolStatusKind(value){
   const s = String(value == null ? '' : value).trim().toLowerCase();
   if(!s || TOOL_STATUS_OK.includes(s)) return 'ok';
@@ -2378,6 +2403,18 @@ document.querySelectorAll('.tab').forEach(t=>{
   };
 });
 
+/* Only the model chart needs repainting when the counting basis changes. */
+document.querySelectorAll('#c-models-mode [data-mm]').forEach(btn=>{
+  btn.onclick = ()=>{
+    modelMode = btn.dataset.mm;
+    document.querySelectorAll('#c-models-mode [data-mm]').forEach(o=>{
+      const on = o === btn;
+      o.classList.toggle('on', on);
+      if(o.setAttribute) o.setAttribute('aria-pressed', String(on));
+    });
+    renderCharts();
+  };
+});
 function renderAll(keepPage){
   compute();
   renderMeta();
