@@ -44,6 +44,15 @@
   .report-bar{margin-left:auto;display:inline-flex;gap:6px;align-items:center}
   .report-bar select{font-size:12px;padding:5px 8px}
   .report-bar .btn{font-size:12px;padding:5px 10px}
+  .report-opts{margin:0 0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2)}
+  .report-opts summary{cursor:pointer;padding:8px 12px;font-size:13px;color:var(--txt2)}
+  .report-opts-body{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;
+    padding:2px 12px 12px;font-size:12px}
+  .report-opts-body input[type=text]{min-width:250px;font-size:12px}
+  .rpt-title-label{display:flex;flex-direction:column;gap:5px;color:var(--txt3)}
+  .chart-toggles{display:flex;flex-wrap:wrap;gap:8px;margin-top:5px;max-width:640px}
+  .timeline-tools{margin:0 0 8px}
+  .timeline-tools select{font-size:12px;padding:4px 8px}
   .segctl{display:inline-flex;gap:4px;margin:0 0 8px}
   .segctl button{font-size:11px;line-height:1.4;padding:3px 9px;border-radius:5px;
     border:1px solid var(--line2);background:transparent;color:var(--txt3);cursor:pointer}
@@ -266,6 +275,16 @@
     <div class="card wide">
       <h2>跨会话时间轴</h2>
       <div class="sub" id="c-timeline-sub">最近会话 · 按模型分段着色 · 点击条形可打开详情</div>
+      <div class="timeline-tools">
+        <label class="tiny">时间范围
+          <select id="timeline-range" aria-label="时间轴范围">
+            <option value="1">最近 1 天</option>
+            <option value="7">最近 7 天</option>
+            <option value="30">最近 30 天</option>
+            <option value="0" selected>全部</option>
+          </select>
+        </label>
+      </div>
       <div class="chart" id="c-timeline"></div>
     </div>
   </div>
@@ -308,6 +327,20 @@
         <button class="btn" id="rpt-export" type="button">导出报告</button>
       </span>
     </div>
+    <details class="report-opts" id="rpt-opts">
+      <summary>报告选项（标题、图表与内容）</summary>
+      <div class="report-opts-body">
+        <label class="rpt-title-label">报告标题
+          <input type="text" id="rpt-title" value="WorkBuddy 会话看板报告" aria-label="报告标题">
+        </label>
+        <div>
+          <span class="tiny">包含图表（仅 HTML 格式）</span>
+          <div class="chart-toggles" id="rpt-charts"></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="rpt-include-table" checked> 会话表格</label>
+        <label class="chk"><input type="checkbox" id="rpt-include-events" checked> 事件流摘要</label>
+      </div>
+    </details>
     <div style="overflow:auto">
       <table>
         <thead><tr>
@@ -418,7 +451,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793942131509};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793949760041};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -857,11 +890,29 @@ function renderMeta(){
 const TIMELINE_ROWS = 18;
 const TIMELINE_ROW_H = 22;
 const TIMELINE_MIN_BAR = 26;   // sessions are minutes long on a days-wide axis
+let timelineRangeDays = 0;     // 0 = all sessions
+
+/** Keep only sessions updated within the last `days`, relative to the newest one. */
+function timelineSessions(sessions, days){
+  const all = (sessions || []).filter(Boolean);
+  if(!days || !all.length) return all;
+  let newest = 0;
+  for(const s of all){ const t = s.updated || 0; if(t > newest) newest = t; }
+  const cutoff = newest - days*86400000;
+  return all.filter(s => (s.updated || 0) >= cutoff);
+}
 
 function drawTimeline(el, sessions){
   if(!el) return;
-  const all = (sessions || []).filter(Boolean);
-  if(!all.length){ el.innerHTML = '<div class="empty">暂无会话</div>'; return; }
+  const source = (sessions || []).filter(Boolean);
+  if(!source.length){ el.innerHTML = '<div class="empty">暂无会话</div>'; return; }
+  const all = timelineSessions(source, timelineRangeDays);
+  if(!all.length){
+    el.innerHTML = '<div class="empty">该时间范围内没有会话，请放宽时间范围</div>';
+    const emptySub = $('c-timeline-sub');
+    if(emptySub) emptySub.textContent = '最近 ' + timelineRangeDays + ' 天没有会话';
+    return;
+  }
   const recent = all.slice().sort((a,b) => (b.updated||0) - (a.updated||0)).slice(0, TIMELINE_ROWS);
   const w = el.clientWidth || 600;
   const labelW = Math.min(180, Math.max(90, w*0.28));
@@ -901,31 +952,41 @@ function drawTimeline(el, sessions){
     s += '<text x="'+(labelW-8)+'" y="'+(y+13)+'" text-anchor="end" fill="#9aa4b8" font-size="11">'
       + esc(clip(session.title || session.id || '(无标题)', 18))
       + '<title>'+esc(session.title||'')+'</title></text>';
-    s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)+'" height="12" rx="3" fill="#2b3240"'
-      + ' data-id="'+esc(session.id)+'" style="cursor:pointer"><title>'
-      + esc((session.title||'')+' · '+fmtTime(start)+' → '+fmtTime(end))+'</title></rect>';
+    s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)
+      +'" height="12" rx="3" fill="#2b3240" pointer-events="none"></rect>';
     const segs = (session.modelSegments || []).filter(g => g && g.firstTs != null);
+    const modelNames = [];
     if(segs.length){
       segs.forEach((seg, j) => {
         const segStart = Math.max(start, seg.firstTs);
         const segEnd = j+1 < segs.length ? Math.min(end, segs[j+1].firstTs) : end;
         if(segEnd <= segStart) return;
         const sx = localAt(segStart), ex = Math.max(sx+1, localAt(segEnd));
-        s += '<rect x="'+sx+'" y="'+(y+3)+'" width="'+(ex-sx)+'" height="12" rx="2" fill="'
-          + modelColor(seg.model) + '" opacity=".9" data-id="'+esc(session.id)
-          + '" style="cursor:pointer"><title>'
-          + esc((seg.model||'未知')+' · '+fmtTime(segStart))+'</title></rect>';
+        s += '<rect x="'+sx+'" y="'+(y+3)+'" width="'+(ex-sx)
+          +'" height="12" rx="2" fill="'+modelColor(seg.model)
+          +'" opacity=".9" pointer-events="none"></rect>';
+        const name = seg.model || '未知';
+        if(modelNames[modelNames.length-1] !== name) modelNames.push(name);
       });
     } else {
-      s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)+'" height="12" rx="3" fill="'
-        + modelColor(session.model || '') + '" opacity=".85" data-id="'+esc(session.id)
-        + '" style="cursor:pointer"><title>'+esc(session.model||'未知')+'</title></rect>';
+      s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)
+        +'" height="12" rx="3" fill="'+modelColor(session.model || '')
+        +'" opacity=".85" pointer-events="none"></rect>';
+      modelNames.push(session.model || '未知');
     }
+    // one transparent overlay per row is the only click target, so a hit test
+    // always lands on the same element regardless of how many segments there are
+    const tip = (session.title||'') + ' · ' + fmtTime(start) + ' → ' + fmtTime(end)
+      + ' · 模型：' + modelNames.join(' → ');
+    s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)
+      +'" height="12" rx="3" fill="transparent" data-id="'+esc(session.id)
+      +'" style="cursor:pointer"><title>'+esc(tip)+'</title></rect>';
   });
   s += '</svg>';
   el.innerHTML = s;
   const sub = $('c-timeline-sub');
-  if(sub) sub.textContent = '最近 ' + recent.length + ' 个会话'
+  if(sub) sub.textContent = (timelineRangeDays ? '最近 ' + timelineRangeDays + ' 天 · ' : '')
+    + '最近 ' + recent.length + ' 个会话'
     + (all.length > recent.length ? '（共 ' + all.length + ' 个）' : '')
     + ' · 按模型分段着色（灰色为未声明模型）· 点击条形可打开详情';
   el.querySelectorAll('rect[data-id]').forEach(rect => {
@@ -3031,6 +3092,37 @@ const REPORT_CHART_TITLES = {
   'c-timeline':'跨会话时间轴'
 };
 const REPORT_CHART_IDS = Object.keys(REPORT_CHART_TITLES);
+const REPORT_DEFAULT_TITLE = 'WorkBuddy 会话看板报告';
+
+/** Build the chart checkboxes from the single chart registry. */
+function initReportOptions(){
+  const host = $('rpt-charts');
+  if(!host) return;
+  host.innerHTML = REPORT_CHART_IDS.map(id =>
+    '<label class="chk"><input type="checkbox" data-chart="' + id + '" checked> '
+    + esc(REPORT_CHART_TITLES[id]) + '</label>').join('');
+}
+function selectReportCharts(charts, selected){
+  if(!selected) return charts;
+  return (charts || []).filter(c => selected.indexOf(c.id) >= 0);
+}
+function reportOptions(){
+  const el = id => $(id);
+  const title = String((el('rpt-title') && el('rpt-title').value) || '').trim()
+    || REPORT_DEFAULT_TITLE;
+  const host = el('rpt-charts');
+  const nodes = (host && host.querySelectorAll)
+    ? host.querySelectorAll('input[data-chart]') : [];
+  const selected = [];
+  for(const node of nodes)
+    if(node.checked) selected.push(String(node.getAttribute('data-chart')));
+  return {
+    title,
+    charts: nodes.length ? selected : REPORT_CHART_IDS.slice(),
+    includeTable: !el('rpt-include-table') || el('rpt-include-table').checked,
+    includeEvents: !el('rpt-include-events') || el('rpt-include-events').checked
+  };
+}
 const REPORT_SCOPE_LABELS = {filtered:'当前筛选结果', session:'当前打开会话'};
 
 /** Whitelist + mask: File handles, raw JSON and the local root never leave. */
@@ -3058,6 +3150,7 @@ function reportContext(scope){
   // an unopened drawer must not silently export every session
   const source = scope === 'session' ? (cur ? [cur] : []) : filtered();
   const sessions = source.map(reportSession).filter(Boolean);
+  const options = reportOptions();
   const charts = REPORT_CHART_IDS.map(id => {
     const el = $(id);
     const svg = el ? el.innerHTML.split(' xmlns="http://www.w3.org/2000/svg"').join('') : '';
@@ -3065,7 +3158,8 @@ function reportContext(scope){
   });
   const sum = key => sessions.reduce((a,s) => a + (s[key] || 0), 0);
   return {
-    scope, generatedAt: Date.now(), sessions, charts, filters: reportFilters(),
+    scope, generatedAt: Date.now(), sessions, options,
+    charts: selectReportCharts(charts, options.charts), filters: reportFilters(),
     kpis: {
       sessions: sessions.length,
       turns: sum('turnsUser') + sum('turnsAssistant'),
@@ -3107,39 +3201,44 @@ function buildCsvReport(ctx){
 }
 
 function buildMarkdownReport(ctx){
-  const k = ctx.kpis, out = [];
-  out.push('# WorkBuddy 会话看板报告');
+  const k = ctx.kpis, options = ctx.options, out = [];
+  out.push('# ' + options.title);
   out.push('');
   out.push('- 生成时间：' + fmtTime(ctx.generatedAt));
   out.push('- 范围：' + (REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope));
   out.push('- 筛选条件：' + (ctx.filters.length ? ctx.filters.join('；') : '无条件'));
+  out.push('- 已选图表：' + ctx.charts.length + ' 张（Markdown 不嵌图片，需要图表请用自包含 HTML 格式）');
   out.push('- 会话数：' + k.sessions + ' · 消息：' + k.turns + ' · 工具调用：' + k.tools
     + ' · 报错：' + k.errors + ' · 未完成：' + k.incomplete + ' · 总体积：' + fmtBytes(k.bytes));
   out.push('');
-  out.push('## 会话列表');
-  out.push('');
-  out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => c[0]).join(' | ') + ' |');
-  out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(() => '---').join(' | ') + ' |');
-  for(const s of ctx.sessions)
-    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => mdCell(c[1](s))).join(' | ') + ' |');
+  if(options.includeTable){
+    out.push('## 会话列表');
+    out.push('');
+    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => c[0]).join(' | ') + ' |');
+    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(() => '---').join(' | ') + ' |');
+    for(const s of ctx.sessions)
+      out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => mdCell(c[1](s))).join(' | ') + ' |');
+    out.push('');
+  }
   if(ctx.scope === 'session' && ctx.sessions.length){
     const s = ctx.sessions[0];
-    out.push('');
     out.push('## 会话详情：' + s.title);
     out.push('');
     out.push('- 工作空间：' + s.ws + ' · 主模型：' + s.model);
     out.push('- 使用过的模型：' + (s.models.join('、') || '未知'));
     out.push('- 首条提问：' + (s.prompt || '（无）'));
+    if(options.includeEvents){
+      out.push('');
+      out.push('### 事件流摘要（前 50 条，不含原始 JSON）');
+      out.push('');
+      out.push('| 时间 | 类型 | 模型 | 记录大小 |');
+      out.push('| --- | --- | --- | --- |');
+      for(const e of s.events)
+        out.push('| ' + [fmtTime(e.t), mdCell(KIND_LABEL[e.k] || e.k),
+          mdCell(e.model), fmtBytes(e.size)].join(' | ') + ' |');
+    }
     out.push('');
-    out.push('### 事件流摘要（前 50 条，不含原始 JSON）');
-    out.push('');
-    out.push('| 时间 | 类型 | 模型 | 记录大小 |');
-    out.push('| --- | --- | --- | --- |');
-    for(const e of s.events)
-      out.push('| ' + [fmtTime(e.t), mdCell(KIND_LABEL[e.k] || e.k),
-        mdCell(e.model), fmtBytes(e.size)].join(' | ') + ' |');
   }
-  out.push('');
   out.push('> 本报告由本地浏览器生成，不含账号名、本机路径与原始会话内容。');
   return out.join(NL) + NL;
 }
@@ -3173,11 +3272,12 @@ const REPORT_CSS = 'body{margin:0;padding:28px;background:#0e1015;color:#e7eaf0;
   + '}@page{margin:12mm}';
 
 function buildHtmlReport(ctx){
-  const k = ctx.kpis;
+  const k = ctx.kpis, options = ctx.options;
+  const title = esc(options.title);
   let h = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    + '<title>WorkBuddy 会话看板报告</title><style>' + REPORT_CSS + '</style></head><body>';
-  h += '<h1>WorkBuddy 会话看板报告</h1>'
+    + '<title>' + title + '</title><style>' + REPORT_CSS + '</style></head><body>';
+  h += '<h1>' + title + '</h1>'
     + '<div class="tiny">生成于 ' + esc(fmtTime(ctx.generatedAt)) + ' · 范围：'
     + esc(REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope) + ' · 纯本地生成，无外部资源</div>';
   h += '<div class="chips">' + ctx.filters.map(f => '<span>' + esc(f) + '</span>').join('')
@@ -3187,30 +3287,38 @@ function buildHtmlReport(ctx){
     ['报错',k.errors], ['未完成',k.incomplete], ['调用未收到结果',k.unanswered],
     ['总体积',fmtBytes(k.bytes)]
   ]) h += '<div class="kpi"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>';
-  h += '</div><h2>图表快照</h2><div class="charts">';
-  for(const chart of ctx.charts)
-    if(chart.svg) h += '<section><h3>' + esc(chart.title) + '</h3>' + chart.svg + '</section>';
-  h += '</div><h2>会话列表</h2><table><thead><tr>';
-  for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<th>' + esc(col[0]) + '</th>';
-  h += '</tr></thead><tbody>';
-  for(const s of ctx.sessions){
-    h += '<tr>';
-    for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<td>' + esc(col[1](s)) + '</td>';
-    h += '</tr>';
+  h += '</div>';
+  if(ctx.charts.length){
+    h += '<h2>图表快照（' + ctx.charts.length + ' 张）</h2><div class="charts">';
+    for(const chart of ctx.charts)
+      if(chart.svg) h += '<section><h3>' + esc(chart.title) + '</h3>' + chart.svg + '</section>';
+    h += '</div>';
   }
-  h += '</tbody></table>';
+  if(options.includeTable){
+    h += '<h2>会话列表</h2><table><thead><tr>';
+    for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<th>' + esc(col[0]) + '</th>';
+    h += '</tr></thead><tbody>';
+    for(const s of ctx.sessions){
+      h += '<tr>';
+      for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<td>' + esc(col[1](s)) + '</td>';
+      h += '</tr>';
+    }
+    h += '</tbody></table>';
+  }
   if(ctx.scope === 'session' && ctx.sessions.length){
     const s = ctx.sessions[0];
     h += '<h2>会话详情：' + esc(s.title) + '</h2>'
       + '<p class="tiny">工作空间：' + esc(s.ws) + ' · 主模型：' + esc(s.model)
       + ' · 使用过的模型：' + esc(s.models.join('、') || '未知') + '</p>'
-      + '<p>' + esc(s.prompt || '（无首条提问）') + '</p>'
-      + '<h3>事件流摘要（前 50 条，不含原始 JSON）</h3>'
-      + '<table><thead><tr><th>时间</th><th>类型</th><th>模型</th><th>记录大小</th></tr></thead><tbody>';
-    for(const e of s.events)
-      h += '<tr><td>' + esc(fmtTime(e.t)) + '</td><td>' + esc(KIND_LABEL[e.k] || e.k)
-        + '</td><td>' + esc(e.model) + '</td><td>' + esc(fmtBytes(e.size)) + '</td></tr>';
-    h += '</tbody></table>';
+      + '<p>' + esc(s.prompt || '（无首条提问）') + '</p>';
+    if(options.includeEvents){
+      h += '<h3>事件流摘要（前 50 条，不含原始 JSON）</h3>'
+        + '<table><thead><tr><th>时间</th><th>类型</th><th>模型</th><th>记录大小</th></tr></thead><tbody>';
+      for(const e of s.events)
+        h += '<tr><td>' + esc(fmtTime(e.t)) + '</td><td>' + esc(KIND_LABEL[e.k] || e.k)
+          + '</td><td>' + esc(e.model) + '</td><td>' + esc(fmtBytes(e.size)) + '</td></tr>';
+      h += '</tbody></table>';
+    }
   }
   h += '<footer>本报告由本地浏览器生成，不含账号名、本机路径与原始会话内容。</footer>'
     + '</body></html>';
@@ -3244,7 +3352,12 @@ function downloadReport(){
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   return link.download;
 }
+initReportOptions();
 $('rpt-export').onclick = downloadReport;
+$('timeline-range').onchange = () => {
+  timelineRangeDays = Math.max(0, parseInt($('timeline-range').value, 10) || 0);
+  drawTimeline($('c-timeline'), S);
+};
 
 const needData = DATA.deploy || !S.length;
 $('loadbox').style.display = needData ? '' : 'none';
