@@ -52,7 +52,12 @@
   .rpt-title-label{display:flex;flex-direction:column;gap:5px;color:var(--txt3)}
   .chart-toggles{display:flex;flex-wrap:wrap;gap:8px;margin-top:5px;max-width:640px}
   .timeline-tools{margin:0 0 8px}
-  .timeline-tools select{font-size:12px;padding:4px 8px}
+  .timeline-tools select,.timeline-tools input[type=number]{font-size:12px;padding:4px 8px}
+  .preset-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    padding:10px 12px;border-top:1px solid var(--line2)}
+  .preset-bar select,.preset-bar .btn{font-size:12px;padding:4px 8px}
+  .preset-bar input[type=text]{min-width:150px;font-size:12px;padding:4px 8px}
+  .preset-bar .tiny{color:var(--txt3)}
   .segctl{display:inline-flex;gap:4px;margin:0 0 8px}
   .segctl button{font-size:11px;line-height:1.4;padding:3px 9px;border-radius:5px;
     border:1px solid var(--line2);background:transparent;color:var(--txt3);cursor:pointer}
@@ -282,8 +287,11 @@
             <option value="7">最近 7 天</option>
             <option value="30">最近 30 天</option>
             <option value="0" selected>全部</option>
+            <option value="custom">自定义…</option>
           </select>
         </label>
+        <input type="number" id="timeline-custom-days" min="1" max="3650" value="3"
+          hidden aria-label="自定义天数" style="width:82px">
       </div>
       <div class="chart" id="c-timeline"></div>
     </div>
@@ -339,6 +347,17 @@
         </div>
         <label class="chk"><input type="checkbox" id="rpt-include-table" checked> 会话表格</label>
         <label class="chk"><input type="checkbox" id="rpt-include-events" checked> 事件流摘要</label>
+      </div>
+      <div class="preset-bar" id="rpt-preset-bar">
+        <label class="tiny">预设
+          <select id="rpt-preset" aria-label="报告预设">
+            <option value="">（默认配置）</option>
+          </select>
+        </label>
+        <input type="text" id="rpt-preset-name" placeholder="预设名称" aria-label="预设名称">
+        <button class="btn" id="rpt-preset-save" type="button">保存当前配置</button>
+        <button class="btn" id="rpt-preset-delete" type="button">删除预设</button>
+        <span class="tiny" id="rpt-preset-status"></span>
       </div>
     </details>
     <div style="overflow:auto">
@@ -451,7 +470,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793949760041};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793966965311};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -891,6 +910,13 @@ const TIMELINE_ROWS = 18;
 const TIMELINE_ROW_H = 22;
 const TIMELINE_MIN_BAR = 26;   // sessions are minutes long on a days-wide axis
 let timelineRangeDays = 0;     // 0 = all sessions
+
+function timelineCustomDays(){
+  const el = $('timeline-custom-days');
+  const value = el ? Number(el.value) : NaN;
+  if(!isFinite(value) || value < 1) return 0;
+  return Math.min(3650, Math.floor(value));
+}
 
 /** Keep only sessions updated within the last `days`, relative to the newest one. */
 function timelineSessions(sessions, days){
@@ -3126,6 +3152,95 @@ function reportOptions(){
 const REPORT_SCOPE_LABELS = {filtered:'当前筛选结果', session:'当前打开会话'};
 
 /** Whitelist + mask: File handles, raw JSON and the local root never leave. */
+/* ---------- report presets ----------
+   Only UI configuration is stored. No session data, titles of sessions, paths
+   or raw JSON ever reaches localStorage. If storage is unavailable (private
+   mode, some file:// engines) an in-memory list keeps the feature usable for
+   the current session and the UI says so explicitly. */
+const REPORT_PRESET_KEY = 'wbviz.reportPresets';
+let reportPresetsMemory = null;
+
+function readReportPresets(){
+  try {
+    const raw = localStorage.getItem(REPORT_PRESET_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch(e){ return reportPresetsMemory || []; }
+}
+function writeReportPresets(list){
+  reportPresetsMemory = list;
+  try { localStorage.setItem(REPORT_PRESET_KEY, JSON.stringify(list)); return true; }
+  catch(e){ return false; }
+}
+function defaultReportPreset(){
+  return {name:'', title:REPORT_DEFAULT_TITLE, charts:REPORT_CHART_IDS.slice(),
+    includeTable:true, includeEvents:true, scope:'filtered', format:'html'};
+}
+function captureReportPreset(name){
+  const options = reportOptions();
+  return {
+    name: String(name || '').trim().slice(0, 40),
+    title: options.title,
+    charts: options.charts.slice(),
+    includeTable: options.includeTable,
+    includeEvents: options.includeEvents,
+    scope: $('rpt-scope') ? $('rpt-scope').value : 'filtered',
+    format: $('rpt-format') ? $('rpt-format').value : 'html'
+  };
+}
+function applyReportPreset(preset){
+  if(!preset) return;
+  const setText = (id, value) => { const el = $(id); if(el) el.value = value; };
+  const setCheck = (id, value) => { const el = $(id); if(el) el.checked = !!value; };
+  setText('rpt-title', preset.title || REPORT_DEFAULT_TITLE);
+  setCheck('rpt-include-table', preset.includeTable !== false);
+  setCheck('rpt-include-events', preset.includeEvents !== false);
+  const selected = Array.isArray(preset.charts) ? preset.charts : REPORT_CHART_IDS.slice();
+  const host = $('rpt-charts');
+  if(host && host.querySelectorAll)
+    for(const node of host.querySelectorAll('input[data-chart]'))
+      node.checked = selected.indexOf(String(node.getAttribute('data-chart'))) >= 0;
+  setText('rpt-scope', preset.scope || 'filtered');
+  setText('rpt-format', preset.format || 'html');
+}
+function refreshPresetSelect(selectedName){
+  const select = $('rpt-preset');
+  if(!select) return;
+  const list = readReportPresets();
+  select.innerHTML = '<option value="">（默认配置）</option>'
+    + list.map(p => '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>').join('');
+  select.value = selectedName || '';
+}
+function setPresetStatus(text){
+  const el = $('rpt-preset-status');
+  if(el) el.textContent = text;
+}
+function saveCurrentPreset(){
+  const name = String(($('rpt-preset-name') && $('rpt-preset-name').value) || '').trim();
+  if(!name){ setPresetStatus('请先填写预设名称'); return false; }
+  const list = readReportPresets().filter(p => p.name !== name);
+  list.push(captureReportPreset(name));
+  list.sort((a,b) => String(a.name).localeCompare(String(b.name), 'zh-CN'));
+  const persisted = writeReportPresets(list);
+  refreshPresetSelect(name);
+  setPresetStatus(persisted ? '已保存：' + name : '已保存（仅本次会话有效）');
+  return true;
+}
+function deleteSelectedPreset(){
+  const name = $('rpt-preset') ? $('rpt-preset').value : '';
+  if(!name){ setPresetStatus('请先选择一个预设'); return false; }
+  const persisted = writeReportPresets(readReportPresets().filter(p => p.name !== name));
+  refreshPresetSelect('');
+  setPresetStatus(persisted ? '已删除：' + name : '已删除（仅本次会话有效）');
+  return true;
+}
+function onPresetChange(){
+  const name = $('rpt-preset') ? $('rpt-preset').value : '';
+  if(!name){ applyReportPreset(defaultReportPreset()); setPresetStatus('已恢复默认配置'); return; }
+  const found = readReportPresets().find(p => p.name === name);
+  if(found){ applyReportPreset(found); setPresetStatus('已应用：' + name); }
+}
+
 function reportSession(s){
   if(!s) return null;
   const clean = value => maskPath(String(value == null ? '' : value));
@@ -3353,9 +3468,26 @@ function downloadReport(){
   return link.download;
 }
 initReportOptions();
+refreshPresetSelect('');
 $('rpt-export').onclick = downloadReport;
+$('rpt-preset-save').onclick = saveCurrentPreset;
+$('rpt-preset-delete').onclick = deleteSelectedPreset;
+$('rpt-preset').onchange = onPresetChange;
 $('timeline-range').onchange = () => {
-  timelineRangeDays = Math.max(0, parseInt($('timeline-range').value, 10) || 0);
+  const value = $('timeline-range').value;
+  const custom = $('timeline-custom-days');
+  if(value === 'custom'){
+    if(custom) custom.hidden = false;
+    timelineRangeDays = timelineCustomDays();
+  } else {
+    if(custom) custom.hidden = true;
+    timelineRangeDays = Math.max(0, parseInt(value, 10) || 0);
+  }
+  drawTimeline($('c-timeline'), S);
+};
+$('timeline-custom-days').oninput = () => {
+  if($('timeline-range').value !== 'custom') return;
+  timelineRangeDays = timelineCustomDays();
   drawTimeline($('c-timeline'), S);
 };
 
