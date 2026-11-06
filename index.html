@@ -24,6 +24,7 @@
   .kpi .v{font-size:22px;font-weight:600;letter-spacing:.3px}
   .kpi .k{font-size:12px;color:var(--txt2);margin-top:2px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px}
+  .card.wide{grid-column:1 / -1}
   @media(max-width:980px){.grid{grid-template-columns:1fr}}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
   .card .sub{font-size:12px;color:var(--txt3);margin-bottom:10px}
@@ -262,6 +263,11 @@
       <div class="sub">每个会话落在哪个区间</div>
       <div class="chart" id="c-toolcalls"></div>
     </div>
+    <div class="card wide">
+      <h2>跨会话时间轴</h2>
+      <div class="sub" id="c-timeline-sub">最近会话 · 按模型分段着色 · 点击条形可打开详情</div>
+      <div class="chart" id="c-timeline"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -412,7 +418,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793937978292};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793942131509};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -844,6 +850,109 @@ function renderMeta(){
       : '');
 }
 
+/* ---------- cross-session timeline ----------
+   Generalises the single-session model lane to the whole board: one row per
+   recent session, positioned on a shared time axis and coloured by the model
+   in effect. Segment boundaries come from modelSegments[].firstTs. */
+const TIMELINE_ROWS = 18;
+const TIMELINE_ROW_H = 22;
+const TIMELINE_MIN_BAR = 26;   // sessions are minutes long on a days-wide axis
+
+function drawTimeline(el, sessions){
+  if(!el) return;
+  const all = (sessions || []).filter(Boolean);
+  if(!all.length){ el.innerHTML = '<div class="empty">暂无会话</div>'; return; }
+  const recent = all.slice().sort((a,b) => (b.updated||0) - (a.updated||0)).slice(0, TIMELINE_ROWS);
+  const w = el.clientWidth || 600;
+  const labelW = Math.min(180, Math.max(90, w*0.28));
+  const padR = 12, padT = 6, axisH = 20;
+  const plotW = w - labelW - padR;
+  const h = recent.length*TIMELINE_ROW_H + padT + axisH + 4;
+  let lo = Infinity, hi = -Infinity;
+  for(const session of recent){
+    const start = session.created || session.updated || 0;
+    const end = session.updated || start;
+    if(start && start < lo) lo = start;
+    if(end > hi) hi = end;
+  }
+  if(!isFinite(lo) || hi <= lo){ lo = Date.now() - 86400000; hi = Date.now(); }
+  const span = Math.max(1, hi - lo);
+  const xAt = ts => labelW + plotW*Math.min(1, Math.max(0, (ts - lo)/span));
+  let s = svgEl(w,h);
+  for(let i=0;i<=3;i++){
+    const x = labelW + plotW*i/3;
+    s += '<line x1="'+x+'" y1="'+padT+'" x2="'+x+'" y2="'+(h-axisH)
+      +'" stroke="#262c38" stroke-width="1"/>';
+    s += '<text x="'+x+'" y="'+(h-5)+'" text-anchor="'+(i===0?'start':(i===3?'end':'middle'))
+      +'" fill="#6b7488" font-size="10">'+esc(fmtDate(lo + span*i/3))+'</text>';
+  }
+  recent.forEach((session, i) => {
+    const y = padT + i*TIMELINE_ROW_H;
+    const start = session.created || session.updated || lo;
+    const end = Math.max(start, session.updated || start);
+    // absolute position on the global axis, but a minimum visible width; the
+    // model segments inside use the session's own time span so they stay legible
+    const limit = labelW + plotW;
+    const rawX1 = Math.max(xAt(start) + TIMELINE_MIN_BAR, xAt(end));
+    const x0 = Math.max(labelW, xAt(start) - Math.max(0, rawX1 - limit));
+    const x1 = Math.min(limit, rawX1);
+    const localAt = ts => x0 + (x1-x0)*Math.min(1,
+      Math.max(0, (ts - start)/Math.max(1, end - start)));
+    s += '<text x="'+(labelW-8)+'" y="'+(y+13)+'" text-anchor="end" fill="#9aa4b8" font-size="11">'
+      + esc(clip(session.title || session.id || '(无标题)', 18))
+      + '<title>'+esc(session.title||'')+'</title></text>';
+    s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)+'" height="12" rx="3" fill="#2b3240"'
+      + ' data-id="'+esc(session.id)+'" style="cursor:pointer"><title>'
+      + esc((session.title||'')+' · '+fmtTime(start)+' → '+fmtTime(end))+'</title></rect>';
+    const segs = (session.modelSegments || []).filter(g => g && g.firstTs != null);
+    if(segs.length){
+      segs.forEach((seg, j) => {
+        const segStart = Math.max(start, seg.firstTs);
+        const segEnd = j+1 < segs.length ? Math.min(end, segs[j+1].firstTs) : end;
+        if(segEnd <= segStart) return;
+        const sx = localAt(segStart), ex = Math.max(sx+1, localAt(segEnd));
+        s += '<rect x="'+sx+'" y="'+(y+3)+'" width="'+(ex-sx)+'" height="12" rx="2" fill="'
+          + modelColor(seg.model) + '" opacity=".9" data-id="'+esc(session.id)
+          + '" style="cursor:pointer"><title>'
+          + esc((seg.model||'未知')+' · '+fmtTime(segStart))+'</title></rect>';
+      });
+    } else {
+      s += '<rect x="'+x0+'" y="'+(y+3)+'" width="'+(x1-x0)+'" height="12" rx="3" fill="'
+        + modelColor(session.model || '') + '" opacity=".85" data-id="'+esc(session.id)
+        + '" style="cursor:pointer"><title>'+esc(session.model||'未知')+'</title></rect>';
+    }
+  });
+  s += '</svg>';
+  el.innerHTML = s;
+  const sub = $('c-timeline-sub');
+  if(sub) sub.textContent = '最近 ' + recent.length + ' 个会话'
+    + (all.length > recent.length ? '（共 ' + all.length + ' 个）' : '')
+    + ' · 按模型分段着色（灰色为未声明模型）· 点击条形可打开详情';
+  el.querySelectorAll('rect[data-id]').forEach(rect => {
+    rect.onclick = () => { const id = rect.getAttribute('data-id'); if(id) openDrawer(id); };
+  });
+}
+
+/** The filter state a report was generated under, so it can be reproduced. */
+function reportFilters(){
+  const value = id => { const el = $(id); return el ? el.value : ''; };
+  const checked = id => { const el = $(id); return !!(el && el.checked); };
+  const parts = [];
+  const query = String(value('q') || '').trim();
+  if(query) parts.push('搜索：' + query);
+  for(const [id,label] of [['f-ws','工作空间'],['f-model','模型'],['f-mode','模式']]){
+    const v = value(id);
+    if(v) parts.push(label + '：' + v);
+  }
+  parts.push('排序：' + sortKey + (sortDir === 1 ? '（默认方向）' : '（反向）'));
+  parts.push('模型口径：' + (modelMode === MODEL_MODE.RECORDS ? '按记录' : '按会话'));
+  if(checked('f-err')) parts.push('只看异常结果');
+  if(checked('f-agent')) parts.push('只看有工具调用');
+  if(checked('f-think')) parts.push('只看有思考内容');
+  if(checked('f-raw')) parts.push('含事件原文');
+  return parts;
+}
+
 /* ---------- charts ---------- */
 function renderCharts(){
   drawDays($('c-days'), days);
@@ -858,6 +967,7 @@ function renderCharts(){
   drawHBar($('c-tools'), topArr(toolCount), C.teal);
   drawHBar($('c-size'), sizeTop, C.violet);
   drawCtx($('c-toolcalls'), toolBuckets);
+  drawTimeline($('c-timeline'), S);
 }
 
 /* ---------- filters ---------- */
@@ -2917,7 +3027,8 @@ const REPORT_BOM = String.fromCharCode(65279);
 const REPORT_CHART_TITLES = {
   'c-days':'按天活跃度', 'c-hours':'时段分布', 'c-models':'模型分布',
   'c-model-flow':'模型切换矩阵', 'c-tools':'工具调用 Top',
-  'c-size':'会话规模 Top', 'c-toolcalls':'单会话工具调用分布'
+  'c-size':'会话规模 Top', 'c-toolcalls':'单会话工具调用分布',
+  'c-timeline':'跨会话时间轴'
 };
 const REPORT_CHART_IDS = Object.keys(REPORT_CHART_TITLES);
 const REPORT_SCOPE_LABELS = {filtered:'当前筛选结果', session:'当前打开会话'};
@@ -2954,7 +3065,7 @@ function reportContext(scope){
   });
   const sum = key => sessions.reduce((a,s) => a + (s[key] || 0), 0);
   return {
-    scope, generatedAt: Date.now(), sessions, charts,
+    scope, generatedAt: Date.now(), sessions, charts, filters: reportFilters(),
     kpis: {
       sessions: sessions.length,
       turns: sum('turnsUser') + sum('turnsAssistant'),
@@ -2988,9 +3099,10 @@ const REPORT_CSV_COLUMNS = [
 ];
 
 function buildCsvReport(ctx){
-  const lines = [REPORT_CSV_COLUMNS.map(c => csvCell(c[0])).join(',')];
+  const filterText = csvCell(ctx.filters.join('；'));
+  const lines = [REPORT_CSV_COLUMNS.map(c => csvCell(c[0])).join(',') + ',' + csvCell('筛选条件')];
   for(const s of ctx.sessions)
-    lines.push(REPORT_CSV_COLUMNS.map(c => csvCell(c[1](s))).join(','));
+    lines.push(REPORT_CSV_COLUMNS.map(c => csvCell(c[1](s))).join(',') + ',' + filterText);
   return REPORT_BOM + lines.join(NL) + NL;
 }
 
@@ -3000,6 +3112,7 @@ function buildMarkdownReport(ctx){
   out.push('');
   out.push('- 生成时间：' + fmtTime(ctx.generatedAt));
   out.push('- 范围：' + (REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope));
+  out.push('- 筛选条件：' + (ctx.filters.length ? ctx.filters.join('；') : '无条件'));
   out.push('- 会话数：' + k.sessions + ' · 消息：' + k.turns + ' · 工具调用：' + k.tools
     + ' · 报错：' + k.errors + ' · 未完成：' + k.incomplete + ' · 总体积：' + fmtBytes(k.bytes));
   out.push('');
@@ -3044,7 +3157,20 @@ const REPORT_CSS = 'body{margin:0;padding:28px;background:#0e1015;color:#e7eaf0;
   + '.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}'
   + 'section{background:#161a22;border:1px solid #262c38;border-radius:10px;padding:14px}'
   + 'svg{max-width:100%;height:auto}.tiny{color:#6b7488;font-size:12px}'
-  + 'footer{margin-top:28px;color:#6b7488;font-size:12px}';
+  + 'footer{margin-top:28px;color:#6b7488;font-size:12px}'
+  + '.chips{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}'
+  + '.chips span{background:#1c212b;border:1px solid #323a49;border-radius:999px;'
+  + 'padding:2px 9px;font-size:11px;color:#9aa4b8}'
+  + '@media print{'
+  + 'body{background:#fff;color:#151515;padding:0;font-size:12px}'
+  + 'h1,h2,h3,th,.tiny,footer,.kpi span{color:#151515}'
+  + '.kpi,.charts section{border-color:#ccc;background:#fff}'
+  + '.kpi b{color:#1a4fb4}.chips span{border-color:#ccc;background:#f5f5f5;color:#333}'
+  + 'th,td,h2{border-color:#ddd}table{font-size:10px}'
+  + 'section{break-inside:avoid;page-break-inside:avoid}'
+  + 'tr{break-inside:avoid;page-break-inside:avoid}'
+  + 'h2{break-after:avoid;page-break-after:avoid}'
+  + '}@page{margin:12mm}';
 
 function buildHtmlReport(ctx){
   const k = ctx.kpis;
@@ -3054,7 +3180,8 @@ function buildHtmlReport(ctx){
   h += '<h1>WorkBuddy 会话看板报告</h1>'
     + '<div class="tiny">生成于 ' + esc(fmtTime(ctx.generatedAt)) + ' · 范围：'
     + esc(REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope) + ' · 纯本地生成，无外部资源</div>';
-  h += '<div class="kpis">';
+  h += '<div class="chips">' + ctx.filters.map(f => '<span>' + esc(f) + '</span>').join('')
+    + '</div><div class="kpis">';
   for(const [label,value] of [
     ['会话数',k.sessions], ['消息',k.turns], ['工具调用',k.tools],
     ['报错',k.errors], ['未完成',k.incomplete], ['调用未收到结果',k.unanswered],
