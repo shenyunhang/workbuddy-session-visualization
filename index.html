@@ -89,6 +89,7 @@
   .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 14px;margin-bottom:18px}
   .meta div{font-size:12px;color:var(--txt2)}
   .meta b{color:var(--txt);font-weight:500}
+  .ev-slot.ev-ph{border-bottom:1px dashed var(--line);opacity:.28}
   .ev{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px}
   .ev .ts{color:var(--txt3);font-size:11px;white-space:nowrap;width:82px;font-variant-numeric:tabular-nums;padding-top:2px}
   .ev .dot{width:9px;height:9px;border-radius:50%;margin-top:7px;flex:none}
@@ -237,6 +238,11 @@
         <button type="button" data-mm="records" aria-pressed="false">按记录</button>
       </div>
       <div class="chart" id="c-models"></div>
+    </div>
+    <div class="card">
+      <h2>模型切换矩阵</h2>
+      <div class="sub">跨全部会话累计 · 行 = 切换前，列 = 切换后</div>
+      <div class="chart" id="c-model-flow"></div>
     </div>
     <div class="card">
       <h2>工具调用 Top</h2>
@@ -391,7 +397,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793886350707};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793933824917};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -625,6 +631,40 @@ function drawCtx(el, buckets){
   s+='</svg>'; el.innerHTML=s;
 }
 
+/** Heatmap of model switches; always emits an SVG so chart counts stay stable. */
+function drawModelFlow(el, flow){
+  if(!el) return;
+  const w = el.clientWidth||600, h=190, padL=86, padT=34, padR=8, padB=8;
+  const labels = (flow && flow.labels) || [], matrix = (flow && flow.matrix) || [];
+  let max = 1;
+  for(const row of matrix) for(const value of row) if(value > max) max = value;
+  let s = svgEl(w,h);
+  if(!labels.length || !flow.total){
+    s += '<text x="'+(w/2)+'" y="'+(h/2)+'" text-anchor="middle" fill="#6b7488" font-size="12">'
+      + '暂无模型切换</text>';
+  } else {
+    const cw=(w-padL-padR)/labels.length, ch=(h-padT-padB)/labels.length;
+    labels.forEach((name,j)=>{
+      s += '<text x="'+(padL+j*cw+cw/2)+'" y="'+(padT-10)
+        +'" text-anchor="middle" fill="#9aa4b8" font-size="10">'+esc(clip(name,10))+'</text>';
+    });
+    matrix.forEach((row,i)=>{
+      s += '<text x="'+(padL-6)+'" y="'+(padT+i*ch+ch/2+4)
+        +'" text-anchor="end" fill="#9aa4b8" font-size="10">'+esc(clip(labels[i],10))+'</text>';
+      row.forEach((value,j)=>{
+        const fill = value ? C.blue : '#1c212b';
+        const opacity = value ? (0.25+0.75*value/max).toFixed(2) : '1';
+        s += '<rect x="'+(padL+j*cw+2)+'" y="'+(padT+i*ch+2)+'" width="'+(cw-4)
+          +'" height="'+(ch-4)+'" rx="3" fill="'+fill+'" opacity="'+opacity+'"><title>'
+          +esc(labels[i])+' → '+esc(labels[j])+'：'+value+' 次</title></rect>';
+        if(value) s += '<text x="'+(padL+j*cw+cw/2)+'" y="'+(padT+i*ch+ch/2+4)
+          +'" text-anchor="middle" fill="#0e1015" font-size="11">'+value+'</text>';
+      });
+    });
+  }
+  s += '</svg>'; el.innerHTML = s;
+}
+
 /* ---------- aggregate (recomputed whenever the session set changes) ---------- */
 /* The label and its upper bound live together, so adding a bucket cannot
    leave a hard-coded comparison chain out of sync. */
@@ -638,7 +678,7 @@ const TOOL_BUCKETS = [
 ];
 const topArr = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([label,value])=>({label,value}));
 let days = [], hours = [], modelCount = {}, modelRecordCount = {},
-    toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [];
+    toolCount = {}, wsCount = {}, sizeTop = [], toolBuckets = [], modelFlow = {labels:[], matrix:[], total:0};
 let modelMode = MODEL_MODE.SESSIONS;   // 'sessions' = one primary model per session, 'records' = all model records
 /** @returns {Array<Object>} per-day activity buckets, oldest first */
 function computeDays(){
@@ -683,6 +723,29 @@ function topByBytes(list, n){
   }
   return top;
 }
+/** Count model-to-model switches using the ordered segment runs of each session. */
+function computeModelFlow(sessions){
+  const edges = new Map(), involvement = new Map();
+  for(const s of (sessions || [])){
+    const sequence = [];
+    for(const segment of (s.modelSegments || [])){
+      const model = segment && segment.model;
+      if(model && (!sequence.length || sequence[sequence.length - 1] !== model)) sequence.push(model);
+    }
+    for(let i = 1; i < sequence.length; i++){
+      const key = sequence[i-1] + ' > ' + sequence[i];
+      edges.set(key, (edges.get(key) || 0) + 1);
+      involvement.set(sequence[i-1], (involvement.get(sequence[i-1]) || 0) + 1);
+      involvement.set(sequence[i], (involvement.get(sequence[i]) || 0) + 1);
+    }
+  }
+  const labels = [...involvement.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]);
+  const matrix = labels.map(a=>labels.map(b=>edges.get(a + ' > ' + b) || 0));
+  let total = 0;
+  for(const row of matrix) for(const value of row) total += value;
+  return {labels, matrix, total};
+}
+
 function computeDistributions(){
   const modelCount = {}, modelRecordCount = {}, toolCount = {}, wsCount = {};
   S.forEach(s=>{
@@ -724,6 +787,7 @@ function computeDistributions(){
 function compute(){
   days = computeDays();
   hours = computeHours();
+  modelFlow = computeModelFlow(S);
   const d = computeDistributions();
   modelCount = d.modelCount;
   modelRecordCount = d.modelRecordCount;
@@ -771,6 +835,7 @@ function renderCharts(){
   drawHours($('c-hours'), hours);
   const useRecords = modelMode === MODEL_MODE.RECORDS;
   drawHBar($('c-models'), topArr(useRecords ? modelRecordCount : modelCount), C.blue);
+  drawModelFlow($('c-model-flow'), modelFlow);
   const modelSub = $('c-models-sub');
   if(modelSub) modelSub.textContent = useRecords
     ? '按记录数统计 · 含一次会话中切换过的模型'
@@ -897,13 +962,8 @@ function setSort(k, toggle){
   const sel = $('f-sort');
   if(sel) sel.value = sortKey;
 }
-function renderList(reset){
-  if(reset) page = 0;
-  const list = filtered();
-  $('count').textContent = '共 '+list.length+' 个会话'
-    + (rawScanCapped ? ' · 原文搜索已达扫描上限' : '');
-  const slice = list.slice(0, (page+1)*PAGE);
-  $('rows').innerHTML = slice.map(s=>{
+/** One session row; shared by the full render and the incremental append. */
+function rowHtml(s){
     const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
     return '<tr class="row" data-id="'+esc(s.id)+'" tabindex="0" role="button"'
       +' aria-label="查看会话 '+esc(s.title)+'">'
@@ -924,8 +984,31 @@ function renderList(reset){
       +'<td>'+(pct==null?'<span class="tiny">—</span>'
         :'<div style="display:flex;align-items:center;gap:6px"><div class="bar"><i style="width:'+pct+'%;background:'+(pct>LIMITS.CTX_DANGER_PCT?C.red:pct>LIMITS.CTX_WARN_PCT?C.amber:C.teal)+'"></i></div><span class="tiny num">'+pct+'%</span></div>')+'</td>'
       +'</tr>';
-  }).join('') || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
+}
+
+function renderList(reset){
+  if(reset) page = 0;
+  const list = filtered();
+  $('count').textContent = '共 '+list.length+' 个会话'
+    + (rawScanCapped ? ' · 原文搜索已达扫描上限' : '');
+  const slice = list.slice(0, (page+1)*PAGE);
+  $('rows').innerHTML = slice.map(rowHtml).join('')
+    || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
   $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
+}
+/** Paging only adds rows; the reader's scroll position and existing nodes stay. */
+function showMoreSessions(){
+  const list = filtered();
+  const rows = $('rows');
+  const already = rows.querySelectorAll ? rows.querySelectorAll('tr.row').length : 0;
+  page++;
+  const from = page*PAGE, to = Math.min(list.length, (page+1)*PAGE);
+  if(!rows.insertAdjacentHTML || already === 0 || from < already || from >= to){
+    renderList(false);
+  } else {
+    rows.insertAdjacentHTML('beforeend', list.slice(from, to).map(rowHtml).join(''));
+    $('more-wrap').style.display = to < list.length ? 'block' : 'none';
+  }
 }
 function isActivateKey(e){
   return e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar';
@@ -954,7 +1037,7 @@ $('rows').addEventListener('keydown', e=>{
   e.preventDefault();
   openDrawer(tr.dataset.id);
 });
-$('more').onclick = ()=>{ page++; renderList(false); };
+$('more').onclick = showMoreSessions;
 
 /* ---------- drawer ---------- */
 let cur = null;              // session currently shown in the drawer
@@ -1183,6 +1266,78 @@ function drawerEventActionsHtml(s, matched, shown, evCount){
   }
   return html;
 }
+/**
+ * Very long event streams are windowed: offscreen rows are replaced by a
+ * placeholder of the same measured height, so the DOM stays bounded while the
+ * scrollbar and every existing row keep their positions. IntersectionObserver
+ * swaps real rows back in just before they enter the viewport. Sessions with
+ * fewer than EV_WINDOW_MIN candidates render exactly as before.
+ */
+const EV_WINDOW_MIN = 500;
+const EV_WINDOW_MARGIN = 700;
+const EV_WINDOW_INITIAL = 80;    // rows materialised during the initial render
+const EV_ROW_DEFAULT_H = 64;     // height of an unmeasured placeholder
+const EV_WINDOW_MIN_BYTES = 512; // average record size that pays for the observer
+/** Windowing only pays off when rows are expensive to render; tiny records
+    are cheaper to keep in the DOM than to observe. */
+function eventWindowNeeded(s, matched){
+  if(matched <= EV_WINDOW_MIN || typeof IntersectionObserver === 'undefined') return false;
+  const all = (s && s.events) || [];
+  let bytes = 0;
+  for(const e of all) if(e) bytes += e.size || 0;
+  return bytes / Math.max(1, all.length) > EV_WINDOW_MIN_BYTES;
+}
+let evWindowCandidates = null, evWindowQ = '', evWindowObserver = null;
+
+function setupEventWindowing(){
+  if(evWindowObserver){ evWindowObserver.disconnect(); evWindowObserver = null; }
+  const list = $('ev-list'), body = $('d-body');
+  if(!list || !body || !list.classList || !list.classList.contains('windowed')
+     || typeof IntersectionObserver === 'undefined') return;
+  evWindowCandidates = drawerEventCandidates(cur, eventQuery());
+  evWindowQ = eventQuery();
+  const slots = list.querySelectorAll('.ev-slot');
+  if(!slots.length) return;
+  // a search jump may target a row far outside the viewport; keep it real so
+  // scrollToCurrentHit() can find .ev.current and bring it into view
+  if(evWindowQ && evHitIndex >= EV_WINDOW_INITIAL){
+    const target = list.querySelector('.ev-slot[data-idx="' + evHitIndex + '"]');
+    const candidate = target && evWindowCandidates[evHitIndex];
+    if(target && candidate && target.classList.contains('ev-ph')){
+      target.classList.remove('ev-ph');
+      target.removeAttribute('style');
+      target.innerHTML = eventHtml(candidate.e, candidate.i, evWindowQ, true);
+    }
+  }
+  evWindowObserver = new IntersectionObserver(entries=>{
+    for(const entry of entries){
+      const el = entry.target;
+      const idx = Number(el.dataset && el.dataset.idx);
+      const candidate = evWindowCandidates && evWindowCandidates[idx];
+      if(!candidate) continue;
+      if(entry.isIntersecting && el.classList.contains('ev-ph')){
+        const real = document.createElement('div');
+        real.className = 'ev-slot';
+        real.dataset.idx = String(idx);
+        real.innerHTML = eventHtml(candidate.e, candidate.i, evWindowQ,
+          !!(evWindowQ && idx === evHitIndex));
+        el.replaceWith(real);
+        evWindowObserver.observe(real);
+      } else if(!entry.isIntersecting && !el.classList.contains('ev-ph')
+                && !el.querySelector('.raw.open, [data-full="1"], [data-current="1"]')){
+        const height = Math.ceil(el.getBoundingClientRect().height) || 64;
+        const placeholder = document.createElement('div');
+        placeholder.className = 'ev-slot ev-ph';
+        placeholder.dataset.idx = String(idx);
+        placeholder.style.height = height + 'px';
+        el.replaceWith(placeholder);
+        evWindowObserver.observe(placeholder);
+      }
+    }
+  }, {root: body, rootMargin: EV_WINDOW_MARGIN + 'px 0px'});
+  slots.forEach(el=>evWindowObserver.observe(el));
+}
+
 function drawerEventsHtml(s){
   const kinds = s.typeCounts || [];
   const evAll = s.events || [];
@@ -1220,10 +1375,22 @@ function drawerEventsHtml(s){
     html += '<div class="tiny" style="margin-bottom:8px">已内联 '+fmtSize(s.rawChars)+' 原始 JSON；'
       +cutCount+' 条记录被截断（把「每会话原始 JSON 预算」设为 0 即可保留全文）</div>';
   }
-  html += '<div id="ev-list">'
-    + (candidates.slice(0, shown).map((c, pos)=>
-        eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('')
-       || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>')
+  const windowed = eventWindowNeeded(s, matched);
+  let rowsHtml;
+  if(windowed){
+    rowsHtml = candidates.slice(0, shown).map((c, pos)=>{
+      if(pos >= EV_WINDOW_INITIAL && !(q && pos === evHitIndex))
+        return '<div class="ev-slot ev-ph" data-idx="'+pos+'"'
+          +' style="height:'+EV_ROW_DEFAULT_H+'px"></div>';
+      return '<div class="ev-slot" data-idx="'+pos+'">'
+        + eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex)) + '</div>';
+    }).join('');
+  } else {
+    rowsHtml = candidates.slice(0, shown).map((c, pos)=>
+      eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('');
+  }
+  html += '<div id="ev-list"'+(windowed?' class="windowed"':'')+'>'
+    + (rowsHtml || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>')
     + '</div>';
   html += '<div id="ev-actions">'
     + drawerEventActionsHtml(s, matched, shown, evCount) + '</div>';
@@ -1241,7 +1408,8 @@ function showMoreEvents(){
   evShown += EV_STEP;
   const after = Math.min(candidates.length, evShown);
   const list = $('ev-list');
-  if(!list || !list.insertAdjacentHTML){ openDrawer(s.id); return; }
+  if(!list || !list.insertAdjacentHTML
+     || (list.classList && list.classList.contains('windowed'))){ openDrawer(s.id); return; }
   const rows = candidates.slice(before, after).map((c, pos)=>
     eventHtml(c.e, c.i, q, !!(q && before + pos === evHitIndex))).join('');
   if(rows) list.insertAdjacentHTML('beforeend', rows);
@@ -1273,6 +1441,7 @@ function openDrawer(id){
   const keepScroll = bodyEl.scrollTop || 0;
   bodyEl.innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
   bodyEl.scrollTop = keepScroll;
+  setupEventWindowing();
   $('drawer').classList.add('on'); $('mask').classList.add('on');
   // only steal focus when the dialog actually opens; repaints while searching
   // must leave the keyboard in the static search field
@@ -1967,39 +2136,52 @@ const SKIP_DIRS = Object.assign({cache:1}, HUGE_DIRS);
 async function subDir(handle, name){
   try { return await handle.getDirectoryHandle(name); } catch(e){ return null; }
 }
+const DIR_ENUM_LIMIT = 5000;   // guard against enumerating a huge home directory
+const isJsonl = name => /\.jsonl$/i.test(name);
+const isJson = name => /\.json$/i.test(name);
+
+/** Collect session files from the normal projects/<workspace>/ layout. */
+async function collectProjectJsonl(projects, out){
+  for await (const [name, handle] of projects.entries()){
+    if(handle.kind !== 'directory') continue;
+    for await (const [fileName, fileHandle] of handle.entries()){
+      if(fileHandle.kind === 'file' && isJsonl(fileName))
+        out.push({name: fileName, dir: name, handle: fileHandle});
+      if(out.length > DIR_ENUM_LIMIT) return;
+    }
+    if(out.length > DIR_ENUM_LIMIT) return;
+  }
+}
+/** Fallback when the reader picked projects/ itself or an unexpected folder. */
+async function collectFlatJsonl(root, out){
+  for await (const [name, handle] of root.entries()){
+    if(handle.kind === 'file' && isJsonl(name)){
+      out.push({name, dir: '', handle});
+    } else if(handle.kind === 'directory' && !SKIP_DIRS[name]){
+      for await (const [fileName, fileHandle] of handle.entries()){
+        if(fileHandle.kind === 'file' && isJsonl(fileName))
+          out.push({name: fileName, dir: name, handle: fileHandle});
+        if(out.length > DIR_ENUM_LIMIT) return;
+      }
+    }
+    if(out.length > DIR_ENUM_LIMIT) return;
+  }
+}
+/** Product configuration snapshots live under cache/conversation-product-spill. */
+async function collectProductSpill(root, out){
+  const cache = await subDir(root, 'cache');
+  const spill = cache ? await subDir(cache, 'conversation-product-spill') : null;
+  if(!spill) return;
+  for await (const [name, handle] of spill.entries()){
+    if(handle.kind === 'file' && isJson(name)) out.push({name, handle});
+  }
+}
 async function collectFromHandle(root){
   const jsonl = [], prod = [];
   const projects = await subDir(root, 'projects');
-  if(projects){
-    for await (const [name, h] of projects.entries()){
-      if(h.kind !== 'directory') continue;
-      for await (const [fn, fh] of h.entries()){
-        if(fh.kind === 'file' && /\.jsonl$/i.test(fn)) jsonl.push({name: fn, dir: name, handle: fh});
-        if(jsonl.length > 5000) break;
-      }
-      if(jsonl.length > 5000) break;
-    }
-  } else {
-    // the user may have picked projects/ itself, or something unexpected
-    for await (const [name, h] of root.entries()){
-      if(h.kind === 'file'){
-        if(/\.jsonl$/i.test(name)) jsonl.push({name, dir: '', handle: h});
-      } else if(h.kind === 'directory' && !SKIP_DIRS[name]){
-        for await (const [fn, fh] of h.entries()){
-          if(fh.kind === 'file' && /\.jsonl$/i.test(fn)) jsonl.push({name: fn, dir: name, handle: fh});
-          if(jsonl.length > 5000) break;
-        }
-      }
-      if(jsonl.length > 5000) break;
-    }
-  }
-  const cache = await subDir(root, 'cache');
-  const spill = cache ? await subDir(cache, 'conversation-product-spill') : null;
-  if(spill){
-    for await (const [fn, fh] of spill.entries()){
-      if(fh.kind === 'file' && /\.json$/i.test(fn)) prod.push({name: fn, handle: fh});
-    }
-  }
+  if(projects) await collectProjectJsonl(projects, jsonl);
+  else await collectFlatJsonl(root, jsonl);
+  await collectProductSpill(root, prod);
   return {jsonl, prod};
 }
 /* Where WorkBuddy keeps its data, derived from the OS the page can see. The
