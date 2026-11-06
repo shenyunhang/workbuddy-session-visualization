@@ -40,6 +40,9 @@
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt2);border-radius:8px;
     padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
   .btn:hover{border-color:var(--blue);color:var(--txt)}
+  .report-bar{margin-left:auto;display:inline-flex;gap:6px;align-items:center}
+  .report-bar select{font-size:12px;padding:5px 8px}
+  .report-bar .btn{font-size:12px;padding:5px 10px}
   .segctl{display:inline-flex;gap:4px;margin:0 0 8px}
   .segctl button{font-size:11px;line-height:1.4;padding:3px 9px;border-radius:5px;
     border:1px solid var(--line2);background:transparent;color:var(--txt3);cursor:pointer}
@@ -286,6 +289,18 @@
       <label class="chk"><input type="checkbox" id="f-think"> 只看有思考内容</label>
       <label class="chk" title="勾选后搜索词也会匹配事件流里的原始 JSON，较慢"><input type="checkbox" id="f-raw"> 含事件原文</label>
       <span class="tiny" id="count"></span>
+      <span class="report-bar" id="report-bar">
+        <select id="rpt-scope" aria-label="导出范围">
+          <option value="filtered">当前筛选结果</option>
+          <option value="session">当前打开会话</option>
+        </select>
+        <select id="rpt-format" aria-label="导出格式">
+          <option value="html">自包含 HTML</option>
+          <option value="markdown">Markdown</option>
+          <option value="csv">CSV</option>
+        </select>
+        <button class="btn" id="rpt-export" type="button">导出报告</button>
+      </span>
     </div>
     <div style="overflow:auto">
       <table>
@@ -397,7 +412,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793933824917};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793937978292};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -2892,6 +2907,218 @@ document.addEventListener('drop', async e=>{
   const files = await filesFromDrop(e.dataTransfer);
   if(files.length) startIngest(files);
 });
+/* ---------- report export ----------
+   reportContext() produces a sanitised, serialisable snapshot of what is on
+   screen. REPORT_FORMATS maps a format key to a pure builder, so adding a
+   format is one table entry and no changes to the controls or the downloader.
+   Everything is generated in the browser; nothing is uploaded. */
+const NL = String.fromCharCode(10);
+const REPORT_BOM = String.fromCharCode(65279);
+const REPORT_CHART_TITLES = {
+  'c-days':'按天活跃度', 'c-hours':'时段分布', 'c-models':'模型分布',
+  'c-model-flow':'模型切换矩阵', 'c-tools':'工具调用 Top',
+  'c-size':'会话规模 Top', 'c-toolcalls':'单会话工具调用分布'
+};
+const REPORT_CHART_IDS = Object.keys(REPORT_CHART_TITLES);
+const REPORT_SCOPE_LABELS = {filtered:'当前筛选结果', session:'当前打开会话'};
+
+/** Whitelist + mask: File handles, raw JSON and the local root never leave. */
+function reportSession(s){
+  if(!s) return null;
+  const clean = value => maskPath(String(value == null ? '' : value));
+  return {
+    id: clean(s.id), title: clean(s.title), ws: clean(s.ws),
+    model: clean(s.model || '未知'),
+    created: s.created || 0, updated: s.updated || 0,
+    turnsUser: s.turnsUser || 0, turnsAssistant: s.turnsAssistant || 0,
+    toolCalls: s.toolCalls || 0, toolErrors: s.toolErrors || 0,
+    toolIncomplete: s.toolIncomplete || 0, toolUnknown: s.toolUnknown || 0,
+    toolCallsUnanswered: s.toolCallsUnanswered || 0,
+    bytes: s.bytes || 0, records: s.records || 0,
+    prompt: clean(clip(s.prompt || '', 200)),
+    models: modelList(s).map(p => clean(p[0])),
+    events: (s.events || []).slice(0, 50).map(e => e ? {
+      t: e.t || 0, k: clean(e.k || ''), size: e.size || 0, model: clean(e.m || '')
+    } : null).filter(Boolean)
+  };
+}
+
+function reportContext(scope){
+  // an unopened drawer must not silently export every session
+  const source = scope === 'session' ? (cur ? [cur] : []) : filtered();
+  const sessions = source.map(reportSession).filter(Boolean);
+  const charts = REPORT_CHART_IDS.map(id => {
+    const el = $(id);
+    const svg = el ? el.innerHTML.split(' xmlns="http://www.w3.org/2000/svg"').join('') : '';
+    return {id, title: REPORT_CHART_TITLES[id], svg: maskPath(svg)};
+  });
+  const sum = key => sessions.reduce((a,s) => a + (s[key] || 0), 0);
+  return {
+    scope, generatedAt: Date.now(), sessions, charts,
+    kpis: {
+      sessions: sessions.length,
+      turns: sum('turnsUser') + sum('turnsAssistant'),
+      tools: sum('toolCalls'),
+      errors: sum('toolErrors'),
+      incomplete: sum('toolIncomplete') + sum('toolUnknown'),
+      unanswered: sum('toolCallsUnanswered'),
+      bytes: sum('bytes')
+    }
+  };
+}
+
+const reportCell = value => String(value == null ? '' : value);
+const csvCell = value => '"' + reportCell(value).split('"').join('""') + '"';
+const mdCell = value => reportCell(value).split('|').join('¦').split(NL).join(' ');
+
+const REPORT_CSV_COLUMNS = [
+  ['标题', s => s.title],
+  ['工作空间', s => s.ws],
+  ['主模型', s => s.model],
+  ['创建时间', s => fmtTime(s.created)],
+  ['更新时间', s => fmtTime(s.updated)],
+  ['用户/助手轮数', s => s.turnsUser + '/' + s.turnsAssistant],
+  ['工具调用', s => s.toolCalls],
+  ['报错', s => s.toolErrors],
+  ['未完成', s => s.toolIncomplete + s.toolUnknown],
+  ['调用未收到结果', s => s.toolCallsUnanswered],
+  ['记录数', s => s.records],
+  ['体积', s => fmtBytes(s.bytes)],
+  ['首条提问', s => s.prompt]
+];
+
+function buildCsvReport(ctx){
+  const lines = [REPORT_CSV_COLUMNS.map(c => csvCell(c[0])).join(',')];
+  for(const s of ctx.sessions)
+    lines.push(REPORT_CSV_COLUMNS.map(c => csvCell(c[1](s))).join(','));
+  return REPORT_BOM + lines.join(NL) + NL;
+}
+
+function buildMarkdownReport(ctx){
+  const k = ctx.kpis, out = [];
+  out.push('# WorkBuddy 会话看板报告');
+  out.push('');
+  out.push('- 生成时间：' + fmtTime(ctx.generatedAt));
+  out.push('- 范围：' + (REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope));
+  out.push('- 会话数：' + k.sessions + ' · 消息：' + k.turns + ' · 工具调用：' + k.tools
+    + ' · 报错：' + k.errors + ' · 未完成：' + k.incomplete + ' · 总体积：' + fmtBytes(k.bytes));
+  out.push('');
+  out.push('## 会话列表');
+  out.push('');
+  out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => c[0]).join(' | ') + ' |');
+  out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(() => '---').join(' | ') + ' |');
+  for(const s of ctx.sessions)
+    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => mdCell(c[1](s))).join(' | ') + ' |');
+  if(ctx.scope === 'session' && ctx.sessions.length){
+    const s = ctx.sessions[0];
+    out.push('');
+    out.push('## 会话详情：' + s.title);
+    out.push('');
+    out.push('- 工作空间：' + s.ws + ' · 主模型：' + s.model);
+    out.push('- 使用过的模型：' + (s.models.join('、') || '未知'));
+    out.push('- 首条提问：' + (s.prompt || '（无）'));
+    out.push('');
+    out.push('### 事件流摘要（前 50 条，不含原始 JSON）');
+    out.push('');
+    out.push('| 时间 | 类型 | 模型 | 记录大小 |');
+    out.push('| --- | --- | --- | --- |');
+    for(const e of s.events)
+      out.push('| ' + [fmtTime(e.t), mdCell(KIND_LABEL[e.k] || e.k),
+        mdCell(e.model), fmtBytes(e.size)].join(' | ') + ' |');
+  }
+  out.push('');
+  out.push('> 本报告由本地浏览器生成，不含账号名、本机路径与原始会话内容。');
+  return out.join(NL) + NL;
+}
+
+const REPORT_CSS = 'body{margin:0;padding:28px;background:#0e1015;color:#e7eaf0;'
+  + 'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;font-size:14px}'
+  + 'h1{font-size:22px;margin:0 0 6px}h2{font-size:16px;margin:26px 0 10px;border-bottom:1px solid #262c38;padding-bottom:6px}'
+  + 'h3{font-size:13px;color:#9aa4b8;margin:0 0 8px}'
+  + 'table{border-collapse:collapse;width:100%;font-size:13px}'
+  + 'th,td{border-bottom:1px solid #262c38;padding:7px 9px;text-align:left}'
+  + 'th{color:#9aa4b8;font-weight:500}'
+  + '.kpis{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}'
+  + '.kpi{background:#161a22;border:1px solid #262c38;border-radius:8px;padding:10px 14px;min-width:120px}'
+  + '.kpi b{display:block;font-size:19px;color:#5b8cff}.kpi span{color:#9aa4b8;font-size:12px}'
+  + '.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}'
+  + 'section{background:#161a22;border:1px solid #262c38;border-radius:10px;padding:14px}'
+  + 'svg{max-width:100%;height:auto}.tiny{color:#6b7488;font-size:12px}'
+  + 'footer{margin-top:28px;color:#6b7488;font-size:12px}';
+
+function buildHtmlReport(ctx){
+  const k = ctx.kpis;
+  let h = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>WorkBuddy 会话看板报告</title><style>' + REPORT_CSS + '</style></head><body>';
+  h += '<h1>WorkBuddy 会话看板报告</h1>'
+    + '<div class="tiny">生成于 ' + esc(fmtTime(ctx.generatedAt)) + ' · 范围：'
+    + esc(REPORT_SCOPE_LABELS[ctx.scope] || ctx.scope) + ' · 纯本地生成，无外部资源</div>';
+  h += '<div class="kpis">';
+  for(const [label,value] of [
+    ['会话数',k.sessions], ['消息',k.turns], ['工具调用',k.tools],
+    ['报错',k.errors], ['未完成',k.incomplete], ['调用未收到结果',k.unanswered],
+    ['总体积',fmtBytes(k.bytes)]
+  ]) h += '<div class="kpi"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>';
+  h += '</div><h2>图表快照</h2><div class="charts">';
+  for(const chart of ctx.charts)
+    if(chart.svg) h += '<section><h3>' + esc(chart.title) + '</h3>' + chart.svg + '</section>';
+  h += '</div><h2>会话列表</h2><table><thead><tr>';
+  for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<th>' + esc(col[0]) + '</th>';
+  h += '</tr></thead><tbody>';
+  for(const s of ctx.sessions){
+    h += '<tr>';
+    for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<td>' + esc(col[1](s)) + '</td>';
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  if(ctx.scope === 'session' && ctx.sessions.length){
+    const s = ctx.sessions[0];
+    h += '<h2>会话详情：' + esc(s.title) + '</h2>'
+      + '<p class="tiny">工作空间：' + esc(s.ws) + ' · 主模型：' + esc(s.model)
+      + ' · 使用过的模型：' + esc(s.models.join('、') || '未知') + '</p>'
+      + '<p>' + esc(s.prompt || '（无首条提问）') + '</p>'
+      + '<h3>事件流摘要（前 50 条，不含原始 JSON）</h3>'
+      + '<table><thead><tr><th>时间</th><th>类型</th><th>模型</th><th>记录大小</th></tr></thead><tbody>';
+    for(const e of s.events)
+      h += '<tr><td>' + esc(fmtTime(e.t)) + '</td><td>' + esc(KIND_LABEL[e.k] || e.k)
+        + '</td><td>' + esc(e.model) + '</td><td>' + esc(fmtBytes(e.size)) + '</td></tr>';
+    h += '</tbody></table>';
+  }
+  h += '<footer>本报告由本地浏览器生成，不含账号名、本机路径与原始会话内容。</footer>'
+    + '</body></html>';
+  return h;
+}
+
+/** @type {Object<string, {label:string, ext:string, mime:string, build:function(Object):string}>} */
+const REPORT_FORMATS = {
+  html:     {label:'自包含 HTML', ext:'html', mime:'text/html;charset=utf-8',     build:buildHtmlReport},
+  markdown: {label:'Markdown',    ext:'md',   mime:'text/markdown;charset=utf-8', build:buildMarkdownReport},
+  csv:      {label:'CSV',         ext:'csv',  mime:'text/csv;charset=utf-8',      build:buildCsvReport}
+};
+
+function downloadReport(){
+  const format = REPORT_FORMATS[$('rpt-format').value] || REPORT_FORMATS.html;
+  const scope = $('rpt-scope').value || 'filtered';
+  const ctx = reportContext(scope);
+  if(!ctx.sessions.length){
+    $('rpt-export').textContent = '没有可导出的会话';
+    setTimeout(() => { $('rpt-export').textContent = '导出报告'; }, 2200);
+    return null;
+  }
+  const blob = new Blob([format.build(ctx)], {type: format.mime});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'workbuddy-report-' + fmtDate(ctx.generatedAt) + '.' + format.ext;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return link.download;
+}
+$('rpt-export').onclick = downloadReport;
+
 const needData = DATA.deploy || !S.length;
 $('loadbox').style.display = needData ? '' : 'none';
 $('loadbtn').onclick = ()=>{
