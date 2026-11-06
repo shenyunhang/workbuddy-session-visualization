@@ -12,9 +12,12 @@
 
 ## 使用方式：选中 ~/.workbuddy 目录即可
 
-1. 用 **Chrome / Edge** 打开页面。页面会按 `navigator` 判断系统并直接显示默认目录
+1. 推荐用 **Chrome / Edge** 打开页面。页面会按 `navigator` 判断系统并直接显示默认目录
    （Windows `C:\Users\<你>\.workbuddy`、macOS `/Users/<你>/.workbuddy`、Linux `/home/<你>/.workbuddy`），
    点「**打开并选择 WorkBuddy 目录**」选中它即可。
+   - **浏览器兼容性**：Firefox / WebKit 可以正常查看看板、载入 `data.json` 快照、使用事件流与报告导出，
+     但目录选择器（`showDirectoryPicker`）是 Chromium 专有能力，在这些浏览器上会降级成普通的
+     「选择文件夹」对话框，也不会记住上次的目录句柄。端到端测试在三种引擎上均通过。
    - **更快的两条捷径**：点「复制可粘贴路径」拿到 `%USERPROFILE%\.workbuddy`（macOS/Linux 为 `~/.workbuddy`），
      在文件夹对话框的地址栏粘贴即直达；也可以直接选中**你的用户目录**，页面会自动往下进 `.workbuddy`。
    - 第二次访问时按钮会变成「**继续访问上次的 WorkBuddy 目录**」——浏览器记住了上次授权的目录句柄
@@ -98,8 +101,9 @@ CSV 带 UTF-8 BOM，Excel 可直接打开；Markdown 适合贴进笔记或仓库
 > 「会话状态」「上下文占用」这类字段只存在于 `workbuddy.db`，浏览器模式不读数据库，因此显示为「—」；
 > 详情面板会改用请求里带的 `prompt_tokens` 峰值，补一行「输入 token 峰值」。
 
-> 下面三张截图用的是**完全虚构的演示数据**（会话标题、工作目录、消息、工具调用全部是编的，
+> 下面四张截图用的是**完全虚构的演示数据**（会话标题、工作目录、消息、工具调用全部是编的，
 > 路径形如 `C:/Users/demo/Projects/...`），只用来展示版面，不含任何真实会话内容。
+> 截图由固定时钟生成的演示页自动截取，与当前页面版本一致。
 
 ### 看板总览
 
@@ -116,6 +120,14 @@ CSV 带 UTF-8 BOM，Excel 可直接打开；Markdown 适合贴进笔记或仓库
 从 `cache/conversation-product-spill/` 读到的产品配置：agent 指令、工具说明、提示模板。
 
 ![系统提示与工具](images/screenshot-prompts.png)
+
+### 跨会话时间轴
+
+最近 18 个会话排布在共享时间轴上，条形按该会话的模型分段着色；灰色表示记录未声明模型。
+因为单个会话只有几分钟而全局轴跨数天，条形有最小可见宽度、段内按会话自身时长缩放，
+绝对位置仍然准确。点击任意条形可打开对应会话。
+
+![跨会话时间轴](images/screenshot-timeline.png)
 
 ## 已知取舍
 
@@ -160,18 +172,30 @@ CSV 带 UTF-8 BOM，Excel 可直接打开；Markdown 适合贴进笔记或仓库
 
 ## 开发验证
 
-源码仓库里保留三套回归测试，模板改动后应全部跑通：
+开发工作副本里保留五套验证工具，模板改动后应全部跑通。当前真实浏览器用例为
+**Chromium / Firefox / WebKit 各 92 项，共 276 项**：
 
 - `node smoke-test.js`：模板语法、静态隐私扫描、纯逻辑与渲染字符串断言（Node VM + DOM 桩）
 - `node browser-test.js`：浏览器侧解析、缓存续解析、目录选择、拖放保护等流程（Node VM + DOM 桩）
-- `python real-browser-test.py`：**真实浏览器**端到端验收，覆盖 `innerHTML` 解析、焦点移交、
-  滚动、aria 状态与事件冒泡；默认 Chromium，`--browser firefox|webkit|all` 可切换引擎
+- `python real-browser-test.py --browser all`：**真实浏览器**端到端验收，覆盖 `innerHTML` 解析、
+  焦点移交、滚动、aria 状态、事件冒泡、报告下载与离线打开；默认只跑 Chromium，
+  `--browser chromium|firefox|webkit|all` 可切换引擎
   （需 `python -m playwright install firefox webkit`），`WB_CHROME` 可指定 Chromium 路径
 - `python performance-profile.py`：用完全合成的大规模会话（约 15 MB / 3 万条记录 + 60 个中等会话）
   在真实浏览器里剖析载入、续解析、翻页、搜索与渲染耗时，不读取任何真实用户数据
-- `python behavior-snapshot.py --save` / `--compare`：导出真实浏览器里列表、图表、抽屉、提示页以及
-  筛选/搜索/排序后的关键 DOM 输出并逐字节比对，另外比对两处截图哈希作为视觉基线，
-  用来证明重构没有改变外部行为。演示数据的时钟可用 `WB_DEMO_NOW` 固定，保证基线可复现
+- `python behavior-snapshot.py --save` / `--compare`：把真实浏览器里列表、**八张图表**、抽屉、
+  提示页、导出控件以及筛选/搜索/排序后的关键 DOM 输出逐字节比对齐（41 个 DOM 键），
+  另外比对两处截图哈希作为视觉基线，共 43 个键。用来证明重构没有改变外部行为。
 
-`python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试加载它），
-`python build.py` 从模板重建这份不含数据的部署页。两个 Python 脚本会在演示页比模板旧时自动重新生成。
+`python demo_gen.py` 用虚构数据生成演示页（真实浏览器测试与文档截图都加载它）；设
+`WB_DEMO_NOW=<毫秒时间戳>` 可固定数据时钟，让截图与行为基线完全可复现。
+`python build.py` 从模板重建这份不含数据的部署页。
+`real-browser-test.py` / `performance-profile.py` 会在演示页比模板旧时自动重新生成；
+`behavior-snapshot.py` 为保证基线可比，每次都用固定时钟强制重新生成。
+
+## 仓库说明
+
+**本公开仓库的 `main` 分支只托管这一个静态页面、本说明与截图**，不含任何构建脚本、
+测试代码或会话数据。开发源码与上面五套验证工具保存在本地工作副本中，不对外发布，
+因此 GitHub 上看到的只有 `index.html`、`README.md` 和 `images/`。
+这样部署源保持极简，也避免把开发脚手架误当成可被浏览器读取的内容。
