@@ -493,7 +493,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1793977373333};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794017698833};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -636,21 +636,38 @@ function modelList(s){
     : (s.runtimeModels || []);
 }
 
+const emptyHtml = text => '<div class="empty">' + esc(text) + '</div>';
+/** Horizontal gridlines shared by the three column/area charts. labelMax adds
+    the left-hand scale, which only the day chart needs. */
+function svgGridLines(w, padL, padR, padT, ih, labelMax){
+  let out = '';
+  for(let i=0;i<=3;i++){
+    const y = padT+ih*(i/3);
+    out += '<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y
+      +'" stroke="#262c38" stroke-width="1"/>';
+    if(labelMax != null) out += '<text x="'+(padL-6)+'" y="'+(y+4)
+      +'" text-anchor="end" fill="#6b7488" font-size="10">'
+      +Math.round(labelMax*(1-i/3))+'</text>';
+  }
+  return out;
+}
+function chartFrame(el, padL){
+  const w = el.clientWidth || 600, h = 190, padR = 8, padT = 10, padB = 22;
+  return {w, h, padL, padR, padT, padB,
+    iw: w-padL-padR, ih: h-padT-padB};
+}
 function svgEl(w,h){ return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" xmlns="http://www.w3.org/2000/svg">'; }
 
 /* ---------- vertical bars (day activity: sessions + tool calls) ---------- */
 function drawDays(el, days){
-  const w = el.clientWidth || 600, h = 190, padL=32, padR=8, padT=10, padB=22;
-  if(!days.length){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  const {w,h,padL,padR,padT,padB,iw,ih} = chartFrame(el, 32);
+  if(!days.length){ el.innerHTML=emptyHtml('暂无数据'); return; }
   const maxS = Math.max(1, ...days.map(d=>d.sessions));
   const maxT = Math.max(1, ...days.map(d=>d.tools));
-  const iw = w-padL-padR, ih = h-padT-padB;
   const bw = Math.max(2, Math.min(18, iw/days.length - 2));
   const step = iw/days.length;
   let s = svgEl(w,h);
-  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
-    s += '<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>';
-    s += '<text x="'+(padL-6)+'" y="'+(y+4)+'" text-anchor="end" fill="#6b7488" font-size="10">'+Math.round(maxS*(1-i/3))+'</text>'; }
+  s += svgGridLines(w, padL, padR, padT, ih, maxS);
   days.forEach((d,i)=>{
     const x = padL + i*step + (step-bw*2)/2;
     const hs = ih*(d.sessions/maxS), ht = ih*(d.tools/maxT);
@@ -666,13 +683,12 @@ function drawDays(el, days){
 
 /* ---------- hour histogram ---------- */
 function drawHours(el, arr){
-  const w = el.clientWidth||600, h=190, padL=28, padR=8, padT=10, padB=22;
-  if(!arr.length || arr.every(v=>!v)){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  const {w,h,padL,padR,padT,padB,iw,ih} = chartFrame(el, 28);
+  if(!arr.length || arr.every(v=>!v)){ el.innerHTML=emptyHtml('暂无数据'); return; }
   const max = Math.max(1, ...arr);
-  const iw = w-padL-padR, ih = h-padT-padB, bw = iw/24;
+  const bw = iw/24;
   let s = svgEl(w,h);
-  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
-    s += '<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>'; }
+  s += svgGridLines(w, padL, padR, padT, ih);
   arr.forEach((v,i)=>{
     const bh = ih*(v/max), x = padL+i*bw+1;
     s += '<rect x="'+x+'" y="'+(padT+ih-bh)+'" width="'+(bw-2)+'" height="'+Math.max(1,bh)+'" fill="'+C.violet+'" opacity=".85" rx="2"><title>'+i+' 点：'+v+' 条</title></rect>';
@@ -686,7 +702,7 @@ function drawHours(el, arr){
 function drawHBar(el, items, color, unit){
   if(!el) return;
   const w = el.clientWidth||600;
-  if(!items.length){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  if(!items.length){ el.innerHTML=emptyHtml('暂无数据'); return; }
   const rowH=24, padR=60, labelW=Math.min(190, Math.max(90, w*0.32)), padT=4;
   const h = items.length*rowH + padT + 4;
   const max = Math.max(1, ...items.map(i=>i.value));
@@ -711,13 +727,12 @@ function drawHBar(el, items, color, unit){
 
 /* ---------- context histogram ---------- */
 function drawCtx(el, buckets){
-  const w = el.clientWidth||600, h=190, padL=28,padR=8,padT=10,padB=22;
-  if(!buckets.length || buckets.every(b=>!b.value)){ el.innerHTML='<div class="empty">暂无数据</div>'; return; }
+  const {w,h,padL,padR,padT,padB,iw,ih} = chartFrame(el, 28);
+  if(!buckets.length || buckets.every(b=>!b.value)){ el.innerHTML=emptyHtml('暂无数据'); return; }
   const max = Math.max(1, ...buckets.map(b=>b.value));
-  const iw=w-padL-padR, ih=h-padT-padB, bw=iw/buckets.length;
+  const bw=iw/buckets.length;
   let s=svgEl(w,h);
-  for(let i=0;i<=3;i++){ const y=padT+ih*(i/3);
-    s+='<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="#262c38" stroke-width="1"/>'; }
+  s+=svgGridLines(w, padL, padR, padT, ih);
   buckets.forEach((b,i)=>{
     const bh=ih*(b.value/max), x=padL+i*bw+2;
     s+='<rect x="'+x+'" y="'+(padT+ih-bh)+'" width="'+(bw-4)+'" height="'+Math.max(1,bh)+'" fill="'+C.amber+'" opacity=".85" rx="2"><title>'+b.label+'：'+b.value+' 个会话</title></rect>';
@@ -954,10 +969,10 @@ function timelineSessions(sessions, days){
 function drawTimeline(el, sessions){
   if(!el) return;
   const source = (sessions || []).filter(Boolean);
-  if(!source.length){ el.innerHTML = '<div class="empty">暂无会话</div>'; return; }
+  if(!source.length){ el.innerHTML = emptyHtml('暂无会话'); return; }
   const all = timelineSessions(source, timelineRangeDays);
   if(!all.length){
-    el.innerHTML = '<div class="empty">该时间范围内没有会话，请放宽时间范围</div>';
+    el.innerHTML = emptyHtml('该时间范围内没有会话，请放宽时间范围');
     const emptySub = $('c-timeline-sub');
     if(emptySub) emptySub.textContent = '最近 ' + timelineRangeDays + ' 天没有会话';
     return;
@@ -1228,7 +1243,7 @@ function renderList(reset){
     + (rawScanCapped ? ' · 原文搜索已达扫描上限' : '');
   const slice = list.slice(0, (page+1)*PAGE);
   $('rows').innerHTML = slice.map(rowHtml).join('')
-    || '<tr><td colspan="7"><div class="empty">没有匹配的会话</div></td></tr>';
+    || '<tr><td colspan="7">'+emptyHtml('没有匹配的会话')+'</td></tr>';
   $('more-wrap').style.display = slice.length < list.length ? 'block' : 'none';
 }
 /** Paging only adds rows; the reader's scroll position and existing nodes stay. */
@@ -1625,7 +1640,7 @@ function drawerEventsHtml(s){
       eventHtml(c.e, c.i, q, !!(q && pos === evHitIndex))).join('');
   }
   html += '<div id="ev-list"'+(windowed?' class="windowed"':'')+'>'
-    + (rowsHtml || '<div class="empty">'+(q?'没有匹配的事件':'该会话没有可展示的事件')+'</div>')
+    + (rowsHtml || emptyHtml(q?'没有匹配的事件':'该会话没有可展示的事件'))
     + '</div>';
   html += '<div id="ev-actions">'
     + drawerEventActionsHtml(s, matched, shown, evCount) + '</div>';
@@ -2375,15 +2390,19 @@ const DIR_ENUM_LIMIT = 5000;   // guard against enumerating a huge home director
 const isJsonl = name => /\.jsonl$/i.test(name);
 const isJson = name => /\.json$/i.test(name);
 
+/** Collect the .jsonl files of one workspace directory into `out`. */
+async function collectJsonlFiles(handle, dirName, out){
+  for await (const [fileName, fileHandle] of handle.entries()){
+    if(fileHandle.kind === 'file' && isJsonl(fileName))
+      out.push({name: fileName, dir: dirName, handle: fileHandle});
+    if(out.length > DIR_ENUM_LIMIT) return;
+  }
+}
 /** Collect session files from the normal projects/<workspace>/ layout. */
 async function collectProjectJsonl(projects, out){
   for await (const [name, handle] of projects.entries()){
     if(handle.kind !== 'directory') continue;
-    for await (const [fileName, fileHandle] of handle.entries()){
-      if(fileHandle.kind === 'file' && isJsonl(fileName))
-        out.push({name: fileName, dir: name, handle: fileHandle});
-      if(out.length > DIR_ENUM_LIMIT) return;
-    }
+    await collectJsonlFiles(handle, name, out);
     if(out.length > DIR_ENUM_LIMIT) return;
   }
 }
@@ -2393,11 +2412,7 @@ async function collectFlatJsonl(root, out){
     if(handle.kind === 'file' && isJsonl(name)){
       out.push({name, dir: '', handle});
     } else if(handle.kind === 'directory' && !SKIP_DIRS[name]){
-      for await (const [fileName, fileHandle] of handle.entries()){
-        if(fileHandle.kind === 'file' && isJsonl(fileName))
-          out.push({name: fileName, dir: name, handle: fileHandle});
-        if(out.length > DIR_ENUM_LIMIT) return;
-      }
+      await collectJsonlFiles(handle, name, out);
     }
     if(out.length > DIR_ENUM_LIMIT) return;
   }
@@ -3003,7 +3018,7 @@ function toolListHtml(q){
   const list = (P.tools||[]).filter(t=>!q || (t.name||'').toLowerCase().includes(q)
     || (t.prompt||'').toLowerCase().includes(q));
   return list.map(t=>foldItem(t.name, null, t.prompt)).join('')
-    || '<div class="empty">没有匹配的工具</div>';
+    || emptyHtml('没有匹配的工具');
 }
 function promptListHtml(q){
   // a snapshot can be missing text/len; treat those as empty rather than
@@ -3013,7 +3028,7 @@ function promptListHtml(q){
   return list.slice(0,60).map(p=>foldItem(p.name, (p.len||0)+' 字', p.text)).join('')
     + (list.length>60 ? '<div class="tiny" style="margin-top:8px">匹配 '+list.length
         +' 条，仅渲染前 60 条，请用搜索缩小范围</div>' : '')
-    || '<div class="empty">没有匹配的模板</div>';
+    || emptyHtml('没有匹配的模板');
 }
 function renderToolList(){
   $('p-tools').innerHTML = toolListHtml(($('p-tool-q').value||'').trim().toLowerCase());
@@ -3024,7 +3039,7 @@ function renderPromptList(){
 function renderSubagents(){
   $('p-sub').innerHTML = (P.subagents||[]).map(s=>
     foldItem(s.name||'内置子代理', null, s.systemPrompt||s.content||'')).join('')
-    || '<div class="empty">无内置子代理</div>';
+    || emptyHtml('无内置子代理');
 }
 /* Stable module-level callbacks plus onclick/onkeydown assignment: renderPrompts
    runs on every tab switch and full repaint, so neither may accumulate. */
@@ -3034,33 +3049,30 @@ function bindPromptHandlers(){
   ['p-agents','p-tools','p-prompts','p-sub'].forEach(id=>{ bindFoldHandlers($(id)); });
 }
 let productRevision = 0, renderedProduct = null, renderedProductRevision = -1;
+const PROMPT_RENDERERS = [renderPromptSource, renderPromptKpis, renderAgents,
+  renderToolList, renderPromptList, renderSubagents, bindPromptHandlers];
 function renderPrompts(){
   renderedProduct = P; renderedProductRevision = productRevision;
   if(!P.ok){
     $('p-src').innerHTML = '<span style="color:'+C.amber+'">未找到产品配置：'+esc(P.error||'未知原因')+'</span>';
     return;
   }
-  renderPromptSource();
-  renderPromptKpis();
-  renderAgents();
-  renderToolList();
-  renderPromptList();
-  renderSubagents();
-  bindPromptHandlers();
+  for(const render of PROMPT_RENDERERS) render();
 }
 
+const VIEW_IDS = {sessions:'view-sessions', prompts:'view-prompts', search:'view-search'};
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.classList.toggle('on', t.dataset.tab === tab);
+  });
+  for(const name of Object.keys(VIEW_IDS))
+    $(VIEW_IDS[name]).style.display = name === tab ? '' : 'none';
+  if(tab === 'sessions') renderCharts();
+  else if(tab === 'prompts') renderPrompts();
+  else renderGlobalSearch();
+}
 document.querySelectorAll('.tab').forEach(t=>{
-  t.onclick = ()=>{
-    document.querySelectorAll('.tab').forEach(o=>o.classList.remove('on'));
-    t.classList.add('on');
-    const tab = t.dataset.tab;
-    $('view-sessions').style.display = tab === 'sessions' ? '' : 'none';
-    $('view-prompts').style.display = tab === 'prompts' ? '' : 'none';
-    $('view-search').style.display = tab === 'search' ? '' : 'none';
-    if(tab === 'sessions') renderCharts();
-    else if(tab === 'prompts') renderPrompts();
-    else renderGlobalSearch();
-  };
+  t.onclick = ()=> switchTab(t.dataset.tab);
 });
 
 /* Only the model chart needs repainting when the counting basis changes. */
@@ -3334,6 +3346,7 @@ const REPORT_CSV_COLUMNS = [
   ['首条提问', s => s.prompt]
 ];
 
+const REPORT_TABLE_COLUMNS = REPORT_CSV_COLUMNS.slice(0, 9);
 function buildCsvReport(ctx){
   const filterText = csvCell(ctx.filters.join('；'));
   const lines = [REPORT_CSV_COLUMNS.map(c => csvCell(c[0])).join(',') + ',' + csvCell('筛选条件')];
@@ -3356,10 +3369,10 @@ function buildMarkdownReport(ctx){
   if(options.includeTable){
     out.push('## 会话列表');
     out.push('');
-    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => c[0]).join(' | ') + ' |');
-    out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(() => '---').join(' | ') + ' |');
+    out.push('| ' + REPORT_TABLE_COLUMNS.map(c => c[0]).join(' | ') + ' |');
+    out.push('| ' + REPORT_TABLE_COLUMNS.map(() => '---').join(' | ') + ' |');
     for(const s of ctx.sessions)
-      out.push('| ' + REPORT_CSV_COLUMNS.slice(0,9).map(c => mdCell(c[1](s))).join(' | ') + ' |');
+      out.push('| ' + REPORT_TABLE_COLUMNS.map(c => mdCell(c[1](s))).join(' | ') + ' |');
     out.push('');
   }
   if(ctx.scope === 'session' && ctx.sessions.length){
@@ -3438,11 +3451,11 @@ function buildHtmlReport(ctx){
   }
   if(options.includeTable){
     h += '<h2>会话列表</h2><table><thead><tr>';
-    for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<th>' + esc(col[0]) + '</th>';
+    for(const col of REPORT_TABLE_COLUMNS) h += '<th>' + esc(col[0]) + '</th>';
     h += '</tr></thead><tbody>';
     for(const s of ctx.sessions){
       h += '<tr>';
-      for(const col of REPORT_CSV_COLUMNS.slice(0,9)) h += '<td>' + esc(col[1](s)) + '</td>';
+      for(const col of REPORT_TABLE_COLUMNS) h += '<td>' + esc(col[1](s)) + '</td>';
       h += '</tr>';
     }
     h += '</tbody></table>';
@@ -3560,8 +3573,8 @@ function renderGlobalSearch(){
   const status = $('gq-status');
   const kpis = $('gq-kpis');
   if(query.length < RAW_QUERY_MIN){
-    box.innerHTML = '<div class="empty">输入至少 ' + RAW_QUERY_MIN
-      + ' 个字符开始搜索（只覆盖已载入的事件）</div>';
+    box.innerHTML = emptyHtml('输入至少 ' + RAW_QUERY_MIN
+      + ' 个字符开始搜索（只覆盖已载入的事件）');
     if(status) status.textContent = '';
     if(kpis) kpis.innerHTML = '';
     return;
@@ -3579,8 +3592,8 @@ function renderGlobalSearch(){
     ? '已达到 64 MB 扫描上限，结果可能不完整'
     : (found.truncated ? '仅展示前 ' + GLOBAL_MAX_RESULTS + ' 条，请缩小查询' : '');
   if(!found.results.length){
-    box.innerHTML = '<div class="empty">没有匹配的事件'
-      + (abnormalOnly ? '（已限定异常结果）' : '') + '</div>';
+    box.innerHTML = emptyHtml('没有匹配的事件'
+      + (abnormalOnly ? '（已限定异常结果）' : ''));
     return;
   }
   box.innerHTML = found.results.map((hit, i) => {
@@ -3597,8 +3610,7 @@ function renderGlobalSearch(){
   }).join('');
 }
 function jumpToGlobalHit(id, query){
-  const tab = document.querySelector('.tab[data-tab="sessions"]');
-  if(tab && tab.click) tab.click();
+  switchTab('sessions');
   // openDrawer clears #ev-q when switching sessions, so set the query after
   // the drawer is open and repaint through the existing event-search path
   openDrawer(id);
