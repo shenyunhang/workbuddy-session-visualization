@@ -139,6 +139,10 @@
   .tab.on{color:var(--txt);border-bottom-color:var(--blue)}
   /* event kind chips */
   .kinds{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+  .ev.compact{background:rgba(212,83,126,.10);border-left:3px solid #d4537e;
+    border-bottom:1px solid rgba(212,83,126,.35);padding-left:8px;border-radius:4px}
+  .tag.compact{background:rgba(212,83,126,.16);border-color:#d4537e;color:#f0a8c4;
+    font-weight:600}
   .kinds .tag{cursor:pointer;user-select:none}
   .kinds .tag.off{opacity:.35;text-decoration:line-through}
   /* model lane: one coloured run per contiguous stretch of the same model */
@@ -423,6 +427,8 @@
         <button class="btn" id="gq-run" type="button">搜索</button>
         <label class="chk" title="只看状态为报错、未完成或未识别的工具结果">
           <input type="checkbox" id="gq-abnormal"> 只看异常结果</label>
+        <label class="chk" title="只列出上下文压缩标记所在的记录">
+          <input type="checkbox" id="gq-compact"> 只看上下文压缩</label>
         <span class="tiny" id="gq-status"></span>
       </div>
       <div id="gq-results"></div>
@@ -493,7 +499,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794017698833};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794122494021};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -617,9 +623,19 @@ const CUT = {TRUNCATED: 1, NOT_INLINED: 2};
 const C = {blue:'#5b8cff',teal:'#2dd4bf',amber:'#f5a524',red:'#f2555a',violet:'#a78bfa',gray:'#64748b',
   green:'#639922',pink:'#d4537e'};
 const KIND_LABEL = {user:'用户输入',assistant:'助手回复',system:'系统提示',reasoning:'思考',tool:'工具调用',
-  result:'工具返回',meta:'会话元信息',title:'标题生成',snapshot:'文件快照',usage:'用量上报',credit:'积分扣减',fork:'重发分支'};
+  result:'工具返回',meta:'会话元信息',title:'标题生成',snapshot:'文件快照',usage:'用量上报',credit:'积分扣减',fork:'重发分支',
+  compact:'上下文压缩'};
 const KIND_COLOR = {user:C.blue,assistant:C.teal,system:C.pink,reasoning:C.violet,tool:C.amber,
-  result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray};
+  result:C.gray,meta:C.gray,title:C.teal,snapshot:C.green,usage:C.amber,credit:C.red,fork:C.gray,
+  compact:C.pink};
+/* WorkBuddy records a context compaction on a message's providerData. These
+   enums come from real session files and are shown instead of raw identifiers. */
+const COMPACT_TYPE_LABEL = {'emergency-auto':'紧急自动', 'pre-message-auto':'消息前自动',
+  'user-command':'手动触发'};
+const COMPACT_TRIGGER_LABEL = {blocking_limit:'上下文触顶',
+  emergency_threshold:'紧急阈值', model_switch:'模型切换'};
+const compactTypeText = v => COMPACT_TYPE_LABEL[v] || v;
+const compactTriggerText = v => COMPACT_TRIGGER_LABEL[v] || v;
 const colorOf = k => KIND_COLOR[k] || C.gray;
 /* Hash the model name, not its array index: colours must stay tied to a model
    even when a filter hides some of them. */
@@ -918,12 +934,14 @@ function renderMeta(){
     for(const t of ts){ if(t < lo) lo = t; if(t > hi) hi = t; }
     return Math.max(1, Math.round((hi-lo)/86400000)); })();
   const totalThinking = S.reduce((a,s)=>a+(s.reasoning||0),0);
+  const totalCompactions = S.reduce((a,s)=>a+(s.compactions||0),0);
   const kpis = [
     ['会话总数', S.length],
     ['工作空间', Object.keys(wsCount).length],
     ['消息条数', totalTurns.toLocaleString()],
     ['工具调用', totalTools.toLocaleString()],
     ['思考片段', totalThinking.toLocaleString()],
+    ['上下文压缩', totalCompactions.toLocaleString()],
     ['覆盖天数', spanDays],
     ['数据体积', fmtBytes(S.reduce((a,s)=>a+(s.bytes||0),0))],
   ];
@@ -1213,11 +1231,21 @@ function setSort(k, toggle){
   if(sel) sel.value = sortKey;
 }
 /** One session row; shared by the full render and the incremental append. */
+function compactSummary(s){
+  const parts = [];
+  for(const [name,count] of (s.compactionTypes||[]))
+    parts.push(compactTypeText(name)+' ×'+count);
+  for(const [name,count] of (s.compactionTriggers||[]))
+    parts.push(compactTriggerText(name)+' ×'+count);
+  return '上下文压缩 '+s.compactions+' 次'+(parts.length ? '：'+parts.join('，') : '');
+}
 function rowHtml(s){
     const pct = (s.ctxUsed!=null&&s.ctxSize)?Math.min(100,Math.round(s.ctxUsed/s.ctxSize*100)):null;
     return '<tr class="row" data-id="'+esc(s.id)+'" tabindex="0" role="button"'
       +' aria-label="查看会话 '+esc(s.title)+'">'
-      +'<td class="tmax" title="'+esc(s.prompt)+'">'+esc(s.title)+'</td>'
+      +'<td class="tmax" title="'+esc(s.prompt)+'">'+esc(s.title)
+        +(s.compactions ? ' <span class="tag compact" title="'
+          +esc(compactSummary(s))+'">压缩 '+s.compactions+'</span>' : '')+'</td>'
       +'<td class="tmax muted">'+esc(s.ws)+'</td>'
       +'<td><span class="tag b">'+esc(s.model||'未知')+'</span>'
         +(modelList(s).length>1
@@ -1328,6 +1356,8 @@ function drawerMetaHtml(s){
     ['思考片段', s.reasoning||0], ['上下文占用', pct==null?'—':(pct+'%（'+s.ctxUsed.toLocaleString()+' / '+s.ctxSize.toLocaleString()+'）')],
     ['记录行数 / 体积', (s.lines||0)+' 行 / '+fmtBytes(s.bytes||0)],
   ];
+  if(s.compactions)
+    meta.push(['上下文压缩', compactSummary(s)]);
   if(s.toolCallsUnanswered)
     meta.push(['调用未收到结果', s.toolCallsUnanswered + ' 次（按 callId 配对）']);
   if(s.unknownStatuses && s.unknownStatuses.length)
@@ -1403,16 +1433,24 @@ function eventHtml(e, i, q, isCurrent){
           ? '<div class="tiny" style="color:'+C.amber+'">全文已展开 · 前 '+fmtSize(HL_CHARS)
             +' 做语法高亮，其余为纯文本以保证响应</div>' : '')
     : '<div class="tiny" style="color:'+C.amber+'">未内联，原始大小 '+fmtSize(e.size)+'</div>';
+  const isCompact = e.k === 'compact';
+  const compactBadge = isCompact
+    ? '<span class="tag compact">上下文压缩'
+      + (e.cxType ? ' · '+esc(compactTypeText(e.cxType)) : '')
+      + (e.cxTrigger ? ' · '+esc(compactTriggerText(e.cxTrigger)) : '')
+      + (e.cxSeq ? ' · 第 '+e.cxSeq+' 次' : '')
+      + '</span> '
+    : '';
   const mc = e.m ? modelColor(e.m) : null;
   const stripe = mc ? ' style="border-left:3px solid '+mc+';padding-left:8px"' : '';
   const multi = !!cur && modelList(cur).length > 1;
   const modelTag = multi && e.m
     ? ' <span class="tiny" style="color:'+mc+'">· '+esc(e.m)+(e.mx?'':'（继承）')+'</span>' : '';
-  return '<div class="ev'+(isCurrent?' current':'')+'" data-k="'+esc(e.k)+'"'
+  return '<div class="ev'+(isCurrent?' current':'')+(isCompact?' compact':'')+'" data-k="'+esc(e.k)+'"'
     +(isCurrent?' data-current="1"':'')+stripe+'><div class="ts">'
     +(e.noTs ? '时间未知' : (e.t ? fmtTime(e.t).slice(5) : ''))+'</div>'
     +'<div class="dot" style="background:'+colorOf(e.k)+'"></div>'
-    +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+tag
+    +'<div class="body"><div class="nm" style="color:'+colorOf(e.k)+'">'+compactBadge+tag
     +' <span class="tiny" style="color:var(--txt3)">· '+esc(meta)+'</span>'+modelTag+'</div>'
     + body + '</div></div>';
 }
@@ -1837,7 +1875,7 @@ function readDataFile(f){
 const KIND_BY_TYPE_JS = {reasoning:'reasoning', function_call:'tool', function_call_result:'result',
   'session-meta':'meta', 'ai-title':'title', 'file-history-snapshot':'snapshot',
   'model-usage':'usage', 'credit-usage':'credit', 'resend-fork-notice':'fork'};
-const CORE_KINDS_JS = {user:1, assistant:1, system:1, reasoning:1, tool:1, result:1};
+const CORE_KINDS_JS = {user:1, assistant:1, system:1, reasoning:1, tool:1, result:1, compact:1};
 const JS_MAX_EVENTS = 150, JS_MAX_AUX = 60, JS_RAW_ONE = 4000, JS_RAW_PREVIEW = 240;
 
 function jsToMs(v){
@@ -1932,6 +1970,7 @@ function jsStat(){
     lines:0, badLines:0, title:'', titleTs:null, cwd:'',
     lineIdx:0, curLine:0, lastSeenTs:null, dropped:0, pending:[],
     curModel:null, modelExact:false, modelSegs:[], modelSwitches:0, modelSegsTruncated:false,
+    compactions:0, compactTypes:{}, compactTriggers:{},
     callIds:new Set(), answeredCallIds:new Set()};
 }
 /* resuming a parse: skip what is already on screen, then keep up to max more */
@@ -1961,6 +2000,12 @@ const RE_J = {
   modelA: /(^|[^\\])"requestModelName"\s*:\s*"([^"]*)"/,
   modelB: /(^|[^\\])"model"\s*:\s*"([^"]*)"/,
   cwd:    /(^|[^\\])"cwd"\s*:\s*"([^"]*)"/,
+  // Compaction markers live in providerData, which can sit well past the
+  // 1.5 KB head, so these are matched against the whole message line.
+  compactFlag: /"isCompactInternal"\s*:\s*true|"isCompacted"\s*:\s*true|"compactType"\s*:\s*"/,
+  compactType: /"compactType"\s*:\s*"([^"]+)"/,
+  compactTrigger: /"compactionTrigger"\s*:\s*"([^"]+)"/,
+  compactSeq: /"compactionSeq"\s*:\s*(\d+)/,
 };
 const HEAD_CHARS = 1500;
 
@@ -1980,11 +2025,14 @@ function jsMakeEvent(st, p, line, budget){
   if(p.m) ev.m = p.m;          // model in effect for this record
   if(p.mx) ev.mx = 1;          // 1 = stated by the record, 0 = inherited
   if(p.noTs) ev.noTs = true;
+  if(p.cxType) ev.cxType = p.cxType;
+  if(p.cxTrigger) ev.cxTrigger = p.cxTrigger;
+  if(p.cxSeq) ev.cxSeq = p.cxSeq;
   if(take > JS_RAW_PREVIEW) st.rawChars += take - JS_RAW_PREVIEW;
   if(take < line.length) ev.cut = take > JS_RAW_PREVIEW ? CUT.TRUNCATED : CUT.NOT_INLINED;
   return ev;
 }
-function jsEvent(st, kind, ts, line, budget){
+function jsEvent(st, kind, ts, line, budget, extra){
   st.typeCounter[kind] = (st.typeCounter[kind] || 0) + 1;
   if(ts != null) st.lastSeenTs = ts;
   // seq is the line's index in the file: stable across re-parses, so it works
@@ -1993,12 +2041,15 @@ function jsEvent(st, kind, ts, line, budget){
   const p = {i: st.curLine, k: kind,
     t: ts != null ? ts : (st.lastSeenTs != null ? st.lastSeenTs : 0),
     noTs: ts == null, m: st.curModel || null, mx: st.modelExact};
+  if(extra) Object.assign(p, extra);
   const core = !!CORE_KINDS_JS[kind];
   const seen = core ? st.nCore : st.nAux;
   if(core) st.nCore++; else st.nAux++;
   const skip = core ? st.skipCore : st.skipAux;
   if(seen < skip) return;                 // already shown in an earlier batch
-  if(seen - skip >= (core ? st.maxCore : st.maxAux)){
+  // a context compaction is a rare, important marker: never hide it behind
+  // the 210-record cap, even when it sits late in a long session
+  if(kind !== 'compact' && seen - skip >= (core ? st.maxCore : st.maxAux)){
     st.dropped++; st.pending.push(p); return;
   }
   st.events.push(jsMakeEvent(st, p, line, budget));
@@ -2100,6 +2151,19 @@ function jsLine(st, raw, budget){
   if(ts){
     if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
     if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
+  }
+  if(rtype === 'message' && RE_J.compactFlag.test(line)){
+    const typeMatch = RE_J.compactType.exec(line);
+    const triggerMatch = RE_J.compactTrigger.exec(line);
+    const seqMatch = RE_J.compactSeq.exec(line);
+    const cxType = typeMatch ? typeMatch[1] : '';
+    const cxTrigger = triggerMatch ? triggerMatch[1] : '';
+    const cxSeq = seqMatch ? +seqMatch[1] : 0;
+    st.compactions++;
+    if(cxType) st.compactTypes[cxType] = (st.compactTypes[cxType] || 0) + 1;
+    if(cxTrigger) st.compactTriggers[cxTrigger] = (st.compactTriggers[cxTrigger] || 0) + 1;
+    jsEvent(st, 'compact', ts, line, budget, {cxType, cxTrigger, cxSeq});
+    return;
   }
   const handler = RECORD_HANDLERS[rtype];
   if(handler){ handler(st, head, ts, line, budget); return; }
@@ -2254,6 +2318,9 @@ function jsFinish(st, id, wsFallback, size){
     rawChars: st.rawChars,
     typeCounts: kv(st.typeCounter).sort((a,b)=>b[1]-a[1]),
     systemMsgs: st.systemMsgs, snapshots: st.snapshots,
+    compactions: st.compactions,
+    compactionTypes: kv(st.compactTypes).sort((a,b)=>b[1]-a[1]),
+    compactionTriggers: kv(st.compactTriggers).sort((a,b)=>b[1]-a[1]),
     file: (wsFallback ? wsFallback + '/' : '') + id + '.jsonl',
   };
 }
@@ -3321,6 +3388,7 @@ function reportContext(scope){
       errors: sum('toolErrors'),
       incomplete: sum('toolIncomplete') + sum('toolUnknown'),
       unanswered: sum('toolCallsUnanswered'),
+      compactions: sum('compactions'),
       bytes: sum('bytes')
     }
   };
@@ -3364,7 +3432,8 @@ function buildMarkdownReport(ctx){
   out.push('- 筛选条件：' + (ctx.filters.length ? ctx.filters.join('；') : '无条件'));
   out.push('- 已选图表：' + ctx.charts.length + ' 张（Markdown 不嵌图片，需要图表请用自包含 HTML 格式）');
   out.push('- 会话数：' + k.sessions + ' · 消息：' + k.turns + ' · 工具调用：' + k.tools
-    + ' · 报错：' + k.errors + ' · 未完成：' + k.incomplete + ' · 总体积：' + fmtBytes(k.bytes));
+    + ' · 报错：' + k.errors + ' · 未完成：' + k.incomplete
+    + ' · 上下文压缩：' + k.compactions + ' 次 · 总体积：' + fmtBytes(k.bytes));
   out.push('');
   if(options.includeTable){
     out.push('## 会话列表');
@@ -3440,7 +3509,7 @@ function buildHtmlReport(ctx){
   for(const [label,value] of [
     ['会话数',k.sessions], ['消息',k.turns], ['工具调用',k.tools],
     ['报错',k.errors], ['未完成',k.incomplete], ['调用未收到结果',k.unanswered],
-    ['总体积',fmtBytes(k.bytes)]
+    ['上下文压缩',k.compactions], ['总体积',fmtBytes(k.bytes)]
   ]) h += '<div class="kpi"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>';
   h += '</div>';
   if(ctx.charts.length){
@@ -3525,6 +3594,9 @@ function globalSnippet(raw, query){
   return (from > 0 ? '…' : '') + part
     + (from + GLOBAL_SNIPPET_CHARS < text.length ? '…' : '');
 }
+function eventIsCompaction(e){
+  return e && (e.k === 'compact' || RE_J.compactFlag.test(String(e.raw || '')));
+}
 function eventIsAbnormal(e){
   const match = RE_J.status.exec(String((e && e.raw) || ''));
   return !!match && toolStatusKind(match[2]) !== 'ok';
@@ -3534,8 +3606,9 @@ function globalDataVersion(){
   for(const s of S) if(s && s.events) version += s.events.length;
   return version + '|' + S.length + '|' + (DATA.generatedAt || 0);
 }
-function searchAllEvents(query, abnormalOnly){
-  const key = query + '|' + (abnormalOnly ? '1' : '0') + '|' + globalDataVersion();
+function searchAllEvents(query, abnormalOnly, compactOnly){
+  const key = query + '|' + (abnormalOnly ? '1' : '0') + '|' + (compactOnly ? '1' : '0')
+    + '|' + globalDataVersion();
   const cached = GLOBAL_SEARCH_CACHE.get(key);
   if(cached) return cached;
   const results = [];
@@ -3549,6 +3622,7 @@ function searchAllEvents(query, abnormalOnly){
       scanned += raw.length;
       if(scanned > GLOBAL_SCAN_LIMIT){ capped = true; break; }
       if(abnormalOnly && !eventIsAbnormal(e)) continue;
+      if(compactOnly && !eventIsCompaction(e)) continue;
       if(!raw.toLowerCase().includes(query)) continue;
       matched = true;
       if(results.length < GLOBAL_MAX_RESULTS)
@@ -3580,7 +3654,8 @@ function renderGlobalSearch(){
     return;
   }
   const abnormalOnly = !!($('gq-abnormal') && $('gq-abnormal').checked);
-  const found = searchAllEvents(query, abnormalOnly);
+  const compactOnly = !!($('gq-compact') && $('gq-compact').checked);
+  const found = searchAllEvents(query, abnormalOnly, compactOnly);
   if(kpis) kpis.innerHTML = [
     ['命中记录', String(found.results.length) + (found.truncated ? '+' : '')],
     ['涉及会话', found.sessions],
@@ -3593,7 +3668,8 @@ function renderGlobalSearch(){
     : (found.truncated ? '仅展示前 ' + GLOBAL_MAX_RESULTS + ' 条，请缩小查询' : '');
   if(!found.results.length){
     box.innerHTML = emptyHtml('没有匹配的事件'
-      + (abnormalOnly ? '（已限定异常结果）' : ''));
+      + (abnormalOnly ? '（已限定异常结果）' : '')
+      + (compactOnly ? '（已限定上下文压缩）' : ''));
     return;
   }
   box.innerHTML = found.results.map((hit, i) => {
@@ -3638,6 +3714,7 @@ refreshPresetSelect('');
 $('gq').oninput = scheduleGlobalSearch;
 $('gq-run').onclick = renderGlobalSearch;
 $('gq-abnormal').onchange = renderGlobalSearch;
+$('gq-compact').onchange = renderGlobalSearch;
 $('gq-results').onclick = e => activateGlobalHit(e.target);
 $('gq-results').onkeydown = e => {
   if(!isActivateKey(e)) return;
