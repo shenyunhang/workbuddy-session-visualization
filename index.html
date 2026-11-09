@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794225526657};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794227649109};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1353,9 +1353,11 @@ let evScrollPending = false; // scroll on an explicit jump, not on every keystro
    descriptor for payloads produced before seq existed. */
 function evKeys(e){
   if(!e) return ['k||'];
-  return e.seq != null
-    ? ['s'+e.seq, 'k'+e.t+'|'+e.k+'|'+e.size]
-    : ['k'+e.t+'|'+e.k+'|'+e.size];
+  // A seq is a stable file-relative identity. Mixing it with the legacy
+  // descriptor and de-duplicating with some() let another record with the same
+  // time, kind and size masquerade as a duplicate: freshly parsed events were
+  // dropped while the cache cursor still advanced past them for good.
+  return e.seq != null ? ['s'+e.seq] : ['k'+e.t+'|'+e.k+'|'+e.size];
 }
 function evKey(e){ return evKeys(e)[0]; }
 
@@ -1733,6 +1735,37 @@ function showMoreEvents(){
   updateEventSearchControls(q, candidates.length);
 }
 
+/* A repaint must keep the reader on the same record. Reusing the numeric
+   scrollTop is not enough: windowed rows collapse to placeholders and a resume
+   appends events, so the same offset points at different content. Anchor on the
+   first visible row instead; resumed records sort after the loaded ones, so
+   both the slot index and the event index stay valid. */
+function scrollAnchorOf(bodyEl, keepScroll){
+  if(!keepScroll || !bodyEl.getBoundingClientRect || !bodyEl.querySelectorAll) return null;
+  const bodyTop = bodyEl.getBoundingClientRect().top;
+  const nodes = bodyEl.querySelectorAll('.ev-slot[data-idx], pre.raw[data-i]');
+  for(const node of nodes){
+    if(!node.getBoundingClientRect) continue;
+    const top = node.getBoundingClientRect().top;
+    if(top < bodyTop - 2) continue;
+    const ds = node.dataset || {};
+    if(ds.idx != null) return {kind:'idx', value:ds.idx, offset:top - bodyTop};
+    if(ds.i != null) return {kind:'i', value:ds.i, offset:top - bodyTop};
+  }
+  return null;
+}
+function restoreScrollAnchor(bodyEl, anchor, keepScroll){
+  if(!anchor || !bodyEl.getBoundingClientRect || !bodyEl.querySelector){
+    bodyEl.scrollTop = keepScroll; return;
+  }
+  const sel = anchor.kind === 'idx'
+    ? '.ev-slot[data-idx="' + anchor.value + '"]'
+    : 'pre.raw[data-i="' + anchor.value + '"]';
+  const node = bodyEl.querySelector(sel);
+  if(!node || !node.getBoundingClientRect){ bodyEl.scrollTop = keepScroll; return; }
+  const top = node.getBoundingClientRect().top - bodyEl.getBoundingClientRect().top;
+  bodyEl.scrollTop = Math.max(0, bodyEl.scrollTop + top - anchor.offset);
+}
 function openDrawer(id){
   const s = S.find(x=>x.id===id); if(!s) return;
   // switching sessions is the only thing that should clear the reader's view
@@ -1751,6 +1784,7 @@ function openDrawer(id){
     +(s.duration?' · 持续 '+fmtDur(s.duration):'');
   const bodyEl = $('d-body');
   const keepScroll = bodyEl.scrollTop || 0;
+  const scrollAnchor = scrollAnchorOf(bodyEl, keepScroll);
   // a repaint destroys the focused chip or button; remember whether it lived
   // inside the scrollable body so focus cannot escape the modal dialog
   const focusWasInBody = drawerOpen && bodyEl.contains
@@ -1758,6 +1792,7 @@ function openDrawer(id){
   bodyEl.innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
   bodyEl.scrollTop = keepScroll;
   setupEventWindowing();
+  restoreScrollAnchor(bodyEl, scrollAnchor, keepScroll);
   if(focusWasInBody){
     const box = $('drawer');
     if(box.focus) box.focus();
@@ -3261,7 +3296,9 @@ async function parseMoreEvents(btn){
   if(usedCache) s.rawChars = cache.rawChars;
   // exactly how many records are still beyond the cap
   if(d.dropped != null) s.dropped = d.dropped;
-  evShown += Math.max(EV_STEP, added);
+  // grow the rendered window by what actually arrived, not by a fixed step:
+  // otherwise "已显示 N 条" drifts away from the data after a deduped batch
+  evShown += added;
   openDrawer(s.id);
 }
 $('mask').onclick = closeDrawer;
