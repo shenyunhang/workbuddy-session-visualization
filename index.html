@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794227649109};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794228550017};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1496,7 +1496,7 @@ function drawerEventCandidates(s, q){
   return out;
 }
 /* A session can switch models mid-conversation. The lane is built from the
-   full-file segments (not the 210 loaded events), so the reader sees every
+   full-file segments (not just the events shown in the drawer), so the reader sees every
    switch; older payloads without per-record models fall back to a share bar. */
 function drawerModelLaneHtml(s){
   const segs = s.modelSegments || [];
@@ -1673,7 +1673,9 @@ function drawerEventsHtml(s){
   html += drawerModelLaneHtml(s);
   if(q){
     html += '<div class="tiny" style="margin-bottom:8px">仅在当前已载入的 '+evCount
-      +' 条事件中查找；磁盘上未解析的记录需先点「从文件继续解析」。</div>';
+      +' 条事件中查找'
+      + (eventRest(s, evCount) > 0 ? '；仍有未解析的记录，需先点「从文件继续解析」' : '')
+      +'。</div>';
   }
   if(!q && hiddenKinds.size){
     html += '<div class="tiny" style="margin-bottom:8px">已隐藏 '+hiddenKinds.size
@@ -1995,6 +1997,11 @@ const KIND_BY_TYPE_JS = {reasoning:'reasoning', function_call:'tool', function_c
   'model-usage':'usage', 'credit-usage':'credit', 'resend-fork-notice':'fork'};
 const CORE_KINDS_JS = {user:1, assistant:1, system:1, reasoning:1, tool:1, result:1, compact:1};
 const JS_MAX_EVENTS = 150, JS_MAX_AUX = 60, JS_RAW_ONE = 4000, JS_RAW_PREVIEW = 240;
+/* Loading a session emits every record as an event in one pass: a 15 MB /
+   30k-record file costs about 60 ms and 60 MB, while paging and windowing keep
+   the DOM small. The 150/60 defaults remain only for legacy snapshots that
+   still need a batched resume. */
+const FULL_SESSION_PARSE_OPTIONS = {maxCore: Infinity, maxAux: Infinity};
 
 function jsToMs(v){
   if(v == null) return null;
@@ -2185,7 +2192,7 @@ function jsEvent(st, kind, ts, line, budget, extra){
   const skip = core ? st.skipCore : st.skipAux;
   if(seen < skip) return;                 // already shown in an earlier batch
   // a context compaction is a rare, important marker: never hide it behind
-  // the 210-record cap, even when it sits late in a long session
+  // the legacy first-pass cap, even when it sits late in a long session
   if(!p.ax && seen - skip >= (core ? st.maxCore : st.maxAux)){
     st.dropped++; st.pending.push(p); return;
   }
@@ -2987,7 +2994,8 @@ async function ingestOneFile(state, f, index){
   try {
     const name = String(f.name || '').replace(/\.jsonl$/i, '');
     const cache = {};
-    const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, state.budget, null,
+    const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, state.budget,
+      FULL_SESSION_PARSE_OPTIONS,
       (done, total)=>{
         // a single file can be tens of MB; show its own progress while it runs
         state.sub = total > LIMITS.BIG_FILE_PROGRESS_LINES ? ('（当前文件 ' + Math.round(done / total * 100) + '%）') : '';
@@ -3220,10 +3228,10 @@ $('ev-q-clear').onclick = ()=>{
   const input = $('ev-q'); if(input.focus) input.focus();
 };
 
-/* The first pass stops at JS_MAX_EVENTS so a 23k-record session does not blow
-   up memory, but it did already walk every line, so all the statistics are
-   complete. Emit the next batch straight from the cached lines: no file read,
-   no split, no re-scan of the records already accounted for. */
+/* Legacy snapshots can still hold records beyond a capped first pass. Emit the
+   next batch straight from the cached lines: no file read, no split, no re-scan
+   of the records already accounted for. Newly loaded sessions parse every
+   record at once, so they never build this cache. */
 function cachedBatch(cache, step){
   const coreFrom = cache.cursorCore, auxFrom = cache.cursorAux;
   cache.cursorCore = Math.min(cache.pendingCore.length, coreFrom + step);
