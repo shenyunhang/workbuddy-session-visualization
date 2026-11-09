@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794217171949};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794225526657};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1398,7 +1398,8 @@ function drawerMetaHtml(s){
     meta.push(['积分消耗', (u.credit || u.creditFromUsage || 0).toFixed(2)
       + (u.creditRecords ? '（'+u.creditRecords+' 条记录）' : '')]);
   }
-  let html = '<div class="meta">'+meta.map(([k,v])=>'<div><b>'+esc(k)+'</b>：'+esc(v)+'</div>').join('')+'</div>';
+  let html = '<div class="meta">'+meta.map(([k,v])=>'<div><b>'+esc(k)+'</b>：'
+    +esc(typeof v === 'string' ? maskPath(v) : v)+'</div>').join('')+'</div>';
   if(s.prompt) html += '<div class="tiny" style="margin-bottom:14px">首条提问：'+esc(s.prompt)+'</div>';
   if(s.tools && s.tools.length){
     html += '<h2>工具调用</h2><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px">'
@@ -1820,11 +1821,32 @@ function ensureMask(root){
   MASK_RULES.push([MASK_RE, '~']);
   MASK_GENERIC = true;
 }
+/* Known credential shapes must be redacted even when no home path was learned:
+   a token pasted into a prompt, a tool argument or an API error message would
+   otherwise reach the screen, the search snippets and every exported report.
+   A cheap hint test keeps the hot path cheap; only high-confidence prefixes and
+   explicit secret-valued fields are replaced, never the bare word "token". */
+const SECRET_HINT = /sk-|gh[pousr]_|Bearer|PRIVATE\s?KEY|api[_-]?key|access[_-]?token|authorization|password|passwd|secret/i;
+const SECRET_SHAPES = [
+  /sk-[A-Za-z0-9_-]{16,}/g,
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /Bearer\s+[A-Za-z0-9._-]{16,}/gi,
+  /-----BEGIN [A-Z ]*PRIVATE\s*KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE\s*KEY-----/g
+];
+const SECRET_FIELD = /("(?:api[_-]?key|access[_-]?token|authorization|password|passwd|secret)"\s*:\s*")([^"]{12,})(")/gi;
+function maskSecrets(v){
+  if(!SECRET_HINT.test(v)) return v;
+  let out = v;
+  for(const re of SECRET_SHAPES) out = out.replace(re, '[redacted]');
+  return out.replace(SECRET_FIELD, (m, a, b, c) => a + '[redacted]' + c);
+}
 const maskPath = s => {
   const v = String(s==null?'':s);
-  if(!MASK_RE) return v;
   const lower = MASK_USER.toLowerCase();
-  return v.replace(MASK_RE, m => (m.toLowerCase() === lower ? '<user>' : '~'));
+  const masked = MASK_RE
+    ? v.replace(MASK_RE, m => (m.toLowerCase() === lower ? '<user>' : '~'))
+    : v;
+  return maskSecrets(masked);
 };
 /* Product config is parsed from a local snapshot at runtime, so its long prompt
    templates can carry the same home paths / account names as the records.
@@ -1845,6 +1867,7 @@ function maskProduct(p){
   (p.prompts||[]).forEach(x=>{ if(x && typeof x.text === 'string') x.len = x.text.length; });
   return p;
 }
+const EVENT_MASK_FIELDS = ['raw','m','ax','axDetail','k','cxType','cxTrigger'];
 function maskSession(s){
   if(s.file) s.file = maskPath(s.file);
   if(s.ws) s.ws = maskPath(s.ws);
@@ -1864,8 +1887,10 @@ function maskSession(s){
     if(typeof s.config[k] === 'string') s.config[k] = maskPath(s.config[k]);
   (s.events||[]).forEach(e=>{
     if(!e) return;
-    if(e.raw) e.raw = maskPath(e.raw);
-    if(e.m) e.m = maskPath(e.m);
+    // cover every string an event can render: badge details come straight from
+    // providerData error messages, not only from the raw JSON payload
+    for(const k of EVENT_MASK_FIELDS)
+      if(typeof e[k] === 'string') e[k] = maskPath(e[k]);
   });
 }
 function applyPrivacy(){
@@ -1874,6 +1899,21 @@ function applyPrivacy(){
   maskProduct(P);
 }
 
+/* A snapshot can carry a root that is nowhere near a home directory while its
+   sessions still hold one. Try every candidate until the account name is
+   known, matching the way directory ingestion keeps trying later sessions. */
+function learnMaskFromSessions(root, sessions){
+  const candidates = [root];
+  for(const s of sessions || []){
+    if(!s) continue;
+    if(s.cwd) candidates.push(s.cwd);
+    if(s.file) candidates.push(s.file);
+  }
+  for(const r of candidates){
+    ensureMask(r);
+    if(MASK_USER) return;
+  }
+}
 /* ---------- local file loading: read data.json straight from disk, no server ---------- */
 function applyPayload(d){
   S = d.sessions || [];
@@ -1882,10 +1922,9 @@ function applyPayload(d){
   DATA.root = d.root || '';
   DATA.source = d.source || {};
   DATA.deploy = false;
-  // browser ingestion has no root path of its own, so fall back to the first
-  // working directory seen in the records to learn what needs masking
-  const first = S.find(s => s.cwd) || S.find(s => s.file) || null;
-  ensureMask(DATA.root || (first ? (first.cwd || first.file) : ''));
+  // browser ingestion has no root path of its own, so learn what needs masking
+  // from the root and then from every session path until one reveals the name
+  learnMaskFromSessions(DATA.root, S);
   applyPrivacy();
   renderAll();
 }
@@ -3164,8 +3203,6 @@ function cachedBatch(cache, step){
   const events = take.map(p=>{
     const line = String(cache.lines[p.i] == null ? '' : cache.lines[p.i]).trim();
     const ev = jsMakeEvent(st, p, line, budget);
-    // cached lines are the unmasked source text; pass one masked its events
-    ev.raw = maskPath(ev.raw);
     return ev;
   });
   cache.rawChars = st.rawChars;
@@ -3199,6 +3236,10 @@ async function parseMoreEvents(btn){
         {shownSeqs: shownSeqs, maxCore: EV_STEP, maxAux: EV_STEP});
     } catch(err){ btn.textContent = '解析失败：' + errorText(err); return; }
   }
+  // Both resume paths rebuild events from unmasked source text. Mask them in
+  // one place so a file-backed resume can never bypass privacy on its way to
+  // the drawer, the event search or the reports.
+  if(d && d.events) maskSession({events: d.events});
   // seq is the file-relative record number and is stable across re-parses.
   // t|kind|size alone used to merge two distinct records that happened to share
   // a millisecond, a kind and a line length. Keep the old key too, so payloads
@@ -3426,7 +3467,7 @@ function selectReportCharts(charts, selected){
 }
 function reportOptions(){
   const el = id => $(id);
-  const title = String((el('rpt-title') && el('rpt-title').value) || '').trim()
+  const title = maskPath(String((el('rpt-title') && el('rpt-title').value) || '').trim())
     || REPORT_DEFAULT_TITLE;
   const host = el('rpt-charts');
   const nodes = (host && host.querySelectorAll)
@@ -3471,7 +3512,7 @@ function defaultReportPreset(){
 function captureReportPreset(name){
   const options = reportOptions();
   return {
-    name: String(name || '').trim().slice(0, 40),
+    name: maskPath(String(name || '').trim()).slice(0, 40),
     title: options.title,
     charts: options.charts.slice(),
     includeTable: options.includeTable,
