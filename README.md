@@ -174,7 +174,7 @@ CSV 带 UTF-8 BOM，Excel 可直接打开；Markdown 适合贴进笔记或仓库
 
 事件流里的关键记录用底色、彩色左边框和徽章单独标出，徽章写明类别与原因。
 
-![上下文压缩标记](images/screenshot-attention.png)
+![关键事件标记](images/screenshot-attention.png)
 
 ## 已知取舍
 
@@ -220,7 +220,7 @@ CSV 带 UTF-8 BOM，Excel 可直接打开；Markdown 适合贴进笔记或仓库
 ## 开发验证
 
 开发工作副本里保留五套验证工具，模板改动后应全部跑通。当前真实浏览器用例为
-**Chromium / Firefox / WebKit 各 128 项，共 384 项**：
+**Chromium / Firefox / WebKit 各 131 项，共 393 项**：
 
 - `node smoke-test.js`：模板语法、静态隐私扫描、纯逻辑与渲染字符串断言（Node VM + DOM 桩）
 - `node browser-test.js`：浏览器侧解析、缓存续解析、目录选择、拖放保护等流程（Node VM + DOM 桩）

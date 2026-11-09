@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794124239528};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794204016770};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1992,15 +1992,18 @@ function jsStat(){
     curModel:null, modelExact:false, modelSegs:[], modelSwitches:0, modelSegsTruncated:false,
     compactions:0, compactTypes:{}, compactTriggers:{},
     curAx:null, attentionCount:0, attentionTypes:{},
-    callIds:new Set(), answeredCallIds:new Set()};
+    callIds:new Set(), answeredCallIds:new Set(), shownSeqs:null};
 }
-/* resuming a parse: skip what is already on screen, then keep up to max more */
+/* resuming a parse: skip what is already on screen, then keep up to max more.
+   A cache-less resume passes the exact seq set instead of a file-order skip,
+   because attention rows bypass the first-pass cap and would offset a count. */
 function jsApplyOpts(st, opts){
   if(!opts) return st;
   if(opts.skipCore) st.skipCore = opts.skipCore;
   if(opts.skipAux) st.skipAux = opts.skipAux;
   if(opts.maxCore) st.maxCore = opts.maxCore;
   if(opts.maxAux) st.maxAux = opts.maxAux;
+  if(opts.shownSeqs) st.shownSeqs = opts.shownSeqs;
   return st;
 }
 
@@ -2074,6 +2077,10 @@ function jsEvent(st, kind, ts, line, budget, extra){
     noTs: ts == null, m: st.curModel || null, mx: st.modelExact};
   if(st.curAx) Object.assign(p, st.curAx);
   if(extra) Object.assign(p, extra);
+  // A resume without a parse cache re-reads the whole file. Records already on
+  // screen must not consume the new batch's quota, and counting displayed kinds
+  // as a file-order skip would lose records: attention rows bypass the cap.
+  if(st.shownSeqs && st.shownSeqs.has(p.i)) return;
   const core = !!CORE_KINDS_JS[kind];
   const seen = core ? st.nCore : st.nAux;
   if(core) st.nCore++; else st.nAux++;
@@ -2125,7 +2132,18 @@ const RECORD_HANDLERS = {
   function_call_result: (st, head, ts, line, budget) => {
     const cid = RE_J.callId.exec(head);
     if(cid) st.answeredCallIds.add(cid[1]);
-    classifyToolResult(st, head, null);
+    // status, is_error and callId can sit after a multi-kilobyte output, past
+    // HEAD_CHARS. Parse such a line once and read the exact fields, so the fast
+    // path and the JSON.parse fallback cannot report different statuses.
+    const hm = RE_J.status.exec(head);
+    const statusSeen = !!(hm && hm[2]) || RE_J.isError.test(head)
+      || RE_J.isErrorCamel.test(head);
+    const needsStatus = !statusSeen && (RE_J.status.test(line)
+      || RE_J.isError.test(line) || RE_J.isErrorCamel.test(line));
+    const needsCallId = !cid && RE_J.callId.test(line);
+    const rec = (needsStatus || needsCallId) ? jsParseLine(line, st) : null;
+    if(needsCallId && rec && rec.callId) st.answeredCallIds.add(String(rec.callId));
+    classifyToolResult(st, rec ? '' : head, rec);
     jsEvent(st, 'result', ts, line, budget);
   },
   function_call: (st, head, ts, line, budget) => {
@@ -2135,10 +2153,11 @@ const RECORD_HANDLERS = {
     // at the first unescaped "name": so it never has to walk the whole record
     const nm = RE_J.name.exec(line);
     let name = nm ? nm[2] : null;
-    if(!name){
-      const rec = jsParseLine(line, st);
-      name = rec ? rec.name : null;
-      if(name) name = String(name);
+    const needsCallId = !cid && RE_J.callId.test(line);
+    const rec = (!name || needsCallId) ? jsParseLine(line, st) : null;
+    if(rec){
+      if(needsCallId && rec.callId) st.callIds.add(String(rec.callId));
+      if(!name){ name = rec.name; if(name) name = String(name); }
     }
     st.toolCalls++;
     const n = String(name || 'unknown');
@@ -2187,6 +2206,25 @@ function classifyAttention(line, rtype, head){
     return {ax:'fork', axDetail:'会话从此处重发分支'};
   return null;
 }
+/* Attention markers must be classified on both paths. A record whose type sits
+   beyond HEAD_CHARS goes through jsRecord, and would otherwise lose its badge,
+   its KPI contribution and its right to bypass the first-pass event cap. */
+function jsAttention(st, line, rtype, head){
+  const attention = classifyAttention(line, rtype, head);
+  st.curAx = attention;
+  if(attention){
+    st.attentionCount++;
+    st.attentionTypes[attention.ax] = (st.attentionTypes[attention.ax] || 0) + 1;
+  }
+  return attention;
+}
+function jsCountCompaction(st, attention){
+  st.compactions++;
+  if(attention.cxType)
+    st.compactTypes[attention.cxType] = (st.compactTypes[attention.cxType] || 0) + 1;
+  if(attention.cxTrigger)
+    st.compactTriggers[attention.cxTrigger] = (st.compactTriggers[attention.cxTrigger] || 0) + 1;
+}
 function jsLine(st, raw, budget){
   const lineIdx = st.lineIdx++;
   st.curAx = null;
@@ -2202,7 +2240,13 @@ function jsLine(st, raw, budget){
   // one and is marked inexact
   jsModel(st, head, lineIdx, ts);
   const tm = RE_J.type.exec(head);
-  if(!tm){ jsRecord(st, line, budget); return; }
+  if(!tm){
+    // parse once for the fallback, and classify attention with the real type
+    const slow = jsParseLine(line, st);
+    jsAttention(st, line, slow && slow.type != null ? String(slow.type) : '', head);
+    jsRecord(st, line, budget, slow);
+    return;
+  }
   const rtype = tm[2];
   if(!st.cwd){
     // only scanned until the first hit, so this costs nothing once set
@@ -2213,18 +2257,9 @@ function jsLine(st, raw, budget){
     if(st.firstTs == null || ts < st.firstTs) st.firstTs = ts;
     if(st.lastTs == null || ts > st.lastTs) st.lastTs = ts;
   }
-  const attention = classifyAttention(line, rtype, head);
-  st.curAx = attention;
-  if(attention){
-    st.attentionCount++;
-    st.attentionTypes[attention.ax] = (st.attentionTypes[attention.ax] || 0) + 1;
-  }
+  const attention = jsAttention(st, line, rtype, head);
   if(attention && attention.ax === 'compact'){
-    st.compactions++;
-    if(attention.cxType)
-      st.compactTypes[attention.cxType] = (st.compactTypes[attention.cxType] || 0) + 1;
-    if(attention.cxTrigger)
-      st.compactTriggers[attention.cxTrigger] = (st.compactTriggers[attention.cxTrigger] || 0) + 1;
+    jsCountCompaction(st, attention);
     // compaction records are markers, not assistant turns
     jsEvent(st, 'compact', ts, line, budget);
     return;
@@ -2264,9 +2299,22 @@ function jsParseLine(line, st){
 
 /* The small-but-varied records (session-meta, model-usage, credit-usage,
    ai-title, fork notices) plus anything the fast path could not classify. */
-function jsRecord(st, line, budget){
-  const rec = jsParseLine(line, st);
+function jsRecord(st, line, budget, parsed){
+  const rec = parsed !== undefined ? parsed : jsParseLine(line, st);
   if(!rec) return;
+  if(st.curAx && st.curAx.ax === 'compact'){
+    // the fast path counts compaction markers instead of assistant turns; do
+    // the same here so a late-typed record cannot disagree with its neighbours
+    const markerTs = jsToMs(rec.timestamp);
+    if(rec.cwd && !st.cwd) st.cwd = String(rec.cwd);
+    if(markerTs){
+      if(st.firstTs == null || markerTs < st.firstTs) st.firstTs = markerTs;
+      if(st.lastTs == null || markerTs > st.lastTs) st.lastTs = markerTs;
+    }
+    jsCountCompaction(st, st.curAx);
+    jsEvent(st, 'compact', markerTs, line, budget);
+    return;
+  }
   const rtype = rec.type;
   const ts = jsToMs(rec.timestamp);
   if(ts){
@@ -3069,17 +3117,21 @@ async function parseMoreEvents(btn){
     btn.textContent = '正在从缓存读取…';
     d = cachedBatch(cache, EV_STEP);
   } else {
-    // a payload loaded from an older snapshot has no cache: pay the old cost
+    // no parse cache for this session (a large ingest or an older snapshot):
+    // pay the old cost of re-reading the file
     btn.textContent = '正在从文件解析…';
     let txt = null;
     try { txt = await readText(s.__file); }
     catch(err){ btn.textContent = '读取失败：' + errorText(err); return; }
-    let core = 0, aux = 0;
-    (s.events||[]).forEach(e=>{ if(CORE_KINDS_JS[e.k]) core++; else aux++; });
+    // Attention rows bypass the first-pass cap, so counting the kinds already
+    // displayed is not a file-order cursor and would lose records. Re-parse
+    // with the exact seq set instead; each resume emits the next unseen batch.
+    const shownSeqs = new Set();
+    (s.events||[]).forEach(e=>{ if(e && e.seq != null) shownSeqs.add(e.seq); });
     const budget = rawBudgetValue();
     try {
       d = await jsParseAsync(txt, s.id, s.ws, s.bytes, budget,
-        {skipCore: core, skipAux: aux, maxCore: EV_STEP, maxAux: EV_STEP});
+        {shownSeqs: shownSeqs, maxCore: EV_STEP, maxAux: EV_STEP});
     } catch(err){ btn.textContent = '解析失败：' + errorText(err); return; }
   }
   // seq is the file-relative record number and is stable across re-parses.
