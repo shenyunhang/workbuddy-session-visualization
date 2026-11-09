@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794208408459};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794217171949};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1750,9 +1750,17 @@ function openDrawer(id){
     +(s.duration?' · 持续 '+fmtDur(s.duration):'');
   const bodyEl = $('d-body');
   const keepScroll = bodyEl.scrollTop || 0;
+  // a repaint destroys the focused chip or button; remember whether it lived
+  // inside the scrollable body so focus cannot escape the modal dialog
+  const focusWasInBody = drawerOpen && bodyEl.contains
+    ? bodyEl.contains(document.activeElement) : false;
   bodyEl.innerHTML = drawerMetaHtml(s) + drawerEventsHtml(s);
   bodyEl.scrollTop = keepScroll;
   setupEventWindowing();
+  if(focusWasInBody){
+    const box = $('drawer');
+    if(box.focus) box.focus();
+  }
   $('drawer').classList.add('on'); $('mask').classList.add('on');
   // only steal focus when the dialog actually opens; repaints while searching
   // must leave the keyboard in the static search field
@@ -2194,9 +2202,37 @@ const RECORD_HANDLERS = {
     jsEvent(st, role || 'message', ts, line, budget);
   },
 };
+/* providerData is not always the last field. Slicing to the end of the line
+   would let later top-level fields (status, error, ...) look like attention
+   markers, so walk the object's braces instead, ignoring quotes and escapes. */
+function providerDataSlice(line){
+  const at = line.indexOf('"providerData"');
+  if(at < 0) return '';
+  let i = at + 14;                 // length of "providerData"
+  while(i < line.length && /\s/.test(line[i])) i++;
+  if(line[i] !== ':') return '';
+  i++;
+  while(i < line.length && /\s/.test(line[i])) i++;
+  if(line[i] !== '{') return '';
+  const open = i;
+  let depth = 0, quoted = false, escaped = false;
+  for(; i < line.length; i++){
+    const ch = line[i];
+    if(quoted){
+      if(escaped) escaped = false;
+      else if(ch === '\\') escaped = true;
+      else if(ch === '"') quoted = false;
+    } else if(ch === '"') quoted = true;
+    else if(ch === '{') depth++;
+    else if(ch === '}'){
+      depth--;
+      if(!depth) return line.slice(open, i + 1);
+    }
+  }
+  return line.slice(open);
+}
 function classifyAttention(line, rtype, head){
-  const pdAt = line.indexOf('"providerData"');
-  const pd = pdAt >= 0 ? line.slice(pdAt) : '';
+  const pd = providerDataSlice(line);
   if(rtype === 'message' && RE_J.compactFlag.test(pd)){
     const tm = RE_J.compactType.exec(pd), tr = RE_J.compactTrigger.exec(pd);
     const sq = RE_J.compactSeq.exec(pd);
@@ -3009,6 +3045,9 @@ function toggleRaw(row){
   const idx = +pre.dataset.i;
   const finish = ()=>{
     const open = pre.classList.toggle('open');
+    // a collapsed row must not keep the data-full flag that pins it in the
+    // windowed DOM forever
+    if(!open && pre.removeAttribute) pre.removeAttribute('data-full');
     // remember it so a full repaint (paging / resuming) restores the row
     const key = evKey(cur.events[idx]);
     if(open) expandedKeys.add(key); else expandedKeys.delete(key);
@@ -3072,6 +3111,10 @@ function trapDrawerFocus(ev){
   const items = box.querySelectorAll('button, [tabindex="0"], a[href], input, select');
   if(!items || !items.length) return;
   const first = items[0], last = items[items.length - 1], active = document.activeElement;
+  // a d-body repaint can leave focus on <body>; pull it back into the dialog
+  // instead of letting the next Tab reach the page behind an aria-modal box
+  const inside = Array.prototype.indexOf.call(items, active) >= 0;
+  if(!inside){ ev.preventDefault(); if(first.focus) first.focus(); return; }
   if(ev.shiftKey && active === first){ ev.preventDefault(); if(last.focus) last.focus(); }
   else if(!ev.shiftKey && active === last){ ev.preventDefault(); if(first.focus) first.focus(); }
 }
@@ -3728,15 +3771,16 @@ function downloadReport(){
    A different way in: instead of guessing which session to open, search the
    raw records of every loaded session and jump straight to the match. Scans
    are bounded (bytes and results), debounced and cached per data version. */
+// UTF-16 code units, not bytes: a CJK character can take 2-3 bytes on disk
 const GLOBAL_SCAN_LIMIT = 64 * 1048576;
 const GLOBAL_MAX_RESULTS = 200;
 const GLOBAL_SNIPPET_CHARS = 180;
 const GLOBAL_SEARCH_CACHE = new Map();
 let globalSearchTimer = null;
 
-function globalSnippet(raw, query){
+function globalSnippet(raw, query, hitAt){
   const text = String(raw || '');
-  const at = text.toLowerCase().indexOf(query);
+  const at = hitAt == null ? text.toLowerCase().indexOf(query) : hitAt;
   const from = Math.max(0, at - 50);
   const part = text.slice(from, from + GLOBAL_SNIPPET_CHARS);
   return (from > 0 ? '…' : '') + part
@@ -3755,9 +3799,17 @@ function eventIsAbnormal(e){
   return !!match && toolStatusKind(match[2]) !== 'ok';
 }
 function globalDataVersion(){
-  let version = 0;
-  for(const s of S) if(s && s.events) version += s.events.length;
-  return version + '|' + S.length + '|' + (DATA.generatedAt || 0);
+  let version = 0, fingerprint = 0;
+  for(const s of S){
+    if(!s) continue;
+    if(s.events) version += s.events.length;
+    // two payloads can share event counts and generatedAt but hold different
+    // sessions; a cached result would then point at session objects long gone
+    const id = String(s.id || '');
+    for(let i = 0; i < id.length; i++)
+      fingerprint = (fingerprint * 31 + id.charCodeAt(i)) | 0;
+  }
+  return version + '|' + S.length + '|' + (DATA.generatedAt || 0) + '|' + fingerprint;
 }
 function searchAllEvents(query, abnormalOnly, attentionOnly){
   const key = query + '|' + (abnormalOnly ? '1' : '0') + '|' + (attentionOnly ? '1' : '0')
@@ -3776,14 +3828,18 @@ function searchAllEvents(query, abnormalOnly, attentionOnly){
       if(scanned > GLOBAL_SCAN_LIMIT){ capped = true; break; }
       if(abnormalOnly && !eventIsAbnormal(e)) continue;
       if(attentionOnly && !eventIsAttention(e)) continue;
-      if(!raw.toLowerCase().includes(query)) continue;
+      // lowercase once per record and reuse the offset for the snippet
+      const at = raw.toLowerCase().indexOf(query);
+      if(at < 0) continue;
       matched = true;
       if(results.length < GLOBAL_MAX_RESULTS)
-        results.push({session:s, event:e, snippet:globalSnippet(raw, query)});
-      else truncated = true;
+        results.push({session:s, event:e, snippet:globalSnippet(raw, query, at)});
+      else { truncated = true; break; }
     }
     if(matched) sessions++;
-    if(capped) break;
+    // once the result list is full, scanning the remaining records cannot add
+    // anything visible; stop instead of copying tens of MB through toLowerCase
+    if(capped || truncated) break;
   }
   const out = {results, scanned, sessions, capped, truncated};
   if(GLOBAL_SEARCH_CACHE.size > 12) GLOBAL_SEARCH_CACHE.clear();
@@ -3811,14 +3867,15 @@ function renderGlobalSearch(){
   const found = searchAllEvents(query, abnormalOnly, attentionOnly);
   if(kpis) kpis.innerHTML = [
     ['命中记录', String(found.results.length) + (found.truncated ? '+' : '')],
-    ['涉及会话', found.sessions],
-    ['扫描原文', fmtBytes(found.scanned)],
-    ['范围', found.capped ? '已达扫描上限' : '全部已载入']
+    // the scan stops at the result cap, so the session count is a lower bound
+    ['涉及会话', String(found.sessions) + (found.truncated ? '+' : '')],
+    ['扫描原文', found.scanned.toLocaleString() + ' 字符'],
+    ['范围', found.capped ? '已达扫描上限' : (found.truncated ? '已达结果上限' : '全部已载入')]
   ].map(pair => '<div class="kpi"><div class="v">' + esc(pair[1])
     + '</div><div class="k">' + esc(pair[0]) + '</div></div>').join('');
   if(status) status.textContent = found.capped
-    ? '已达到 64 MB 扫描上限，结果可能不完整'
-    : (found.truncated ? '仅展示前 ' + GLOBAL_MAX_RESULTS + ' 条，请缩小查询' : '');
+    ? '已达到约 6710 万字符的扫描上限，结果可能不完整'
+    : (found.truncated ? '已展示前 ' + GLOBAL_MAX_RESULTS + ' 条，扫描提前结束，请缩小查询' : '');
   if(!found.results.length){
     box.innerHTML = emptyHtml('没有匹配的事件'
       + (abnormalOnly ? '（已限定异常结果）' : '')
