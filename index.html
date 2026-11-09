@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794204016770};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794208408459};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -966,6 +966,7 @@ function renderMeta(){
     : (S.length ? ('已载入 '+S.length+' 个会话') : '尚未载入数据'))
     + (src.dbOk || src.browser || DATA.deploy ? '' : ' · <span style="color:'+C.amber+'">会话索引不可用：'+esc(src.dbError)+'</span>');
   $('foot').textContent = '只读分析，未修改任何 WorkBuddy 数据。'
+    + (MASK_GENERIC ? ' 未识别到账号名，已只按通用路径规则脱敏。' : '')
     + (DATA.deploy || (src && src.browser)
       ? ' 浏览器模式不读取 workbuddy.db，会话状态、上下文窗口等只存在于数据库的字段显示为「—」。'
       : '');
@@ -1094,10 +1095,12 @@ function reportFilters(){
   const value = id => { const el = $(id); return el ? el.value : ''; };
   const checked = id => { const el = $(id); return !!(el && el.checked); };
   const parts = [];
-  const query = String(value('q') || '').trim();
+  // the search box invites pasting a working directory, so the filter summary
+  // must go through the same masking as every other exported field
+  const query = maskPath(String(value('q') || '').trim());
   if(query) parts.push('搜索：' + query);
   for(const [id,label] of [['f-ws','工作空间'],['f-model','模型'],['f-mode','模式']]){
-    const v = value(id);
+    const v = maskPath(String(value(id)));
     if(v) parts.push(label + '：' + v);
   }
   parts.push('排序：' + sortKey + (sortDir === 1 ? '（默认方向）' : '（反向）'));
@@ -1782,9 +1785,9 @@ function moveEventHit(delta){
 
 /* ---------- privacy: strip the local home path / account name from everything shown ---------- */
 const MASK_RULES = [];      // kept as [regex, replacement] for callers that inspect it
-let MASK_RE = null, MASK_USER = '';
+let MASK_RE = null, MASK_USER = '', MASK_GENERIC = false;
 function buildMask(root){
-  MASK_RULES.length = 0; MASK_RE = null; MASK_USER = '';
+  MASK_RULES.length = 0; MASK_RE = null; MASK_USER = ''; MASK_GENERIC = false;
   const m = String(root||'').match(/(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|home|Documents and Settings)[\\/]{1,2}([^\\/]+)/i);
   if(!m || m[1].length < 2) return;
   MASK_USER = m[1];
@@ -1795,6 +1798,19 @@ function buildMask(root){
   if(u.length >= 4) alts.push(u);
   MASK_RE = new RegExp(alts.join('|'), 'gi');
   MASK_RULES.push([MASK_RE, '~']);
+}
+/* Loading real records must never leave masking disabled. A working directory
+   such as D:\repos, /mnt/d or a UNC share does not reveal the account name,
+   but home paths still appear in titles, cwd and raw JSON. Keep a generic
+   home-path rule until a later session exposes the account name. */
+function ensureMask(root){
+  buildMask(root);
+  if(MASK_USER) return;
+  const home = '(?:Users|home|Documents and Settings)';
+  MASK_RE = new RegExp('(?:[A-Za-z]:)?[\\\\/]{1,2}' + home
+    + '[\\\\/]{1,2}[^\\\\/\\s"<>|]+(?=[\\\\/])', 'gi');
+  MASK_RULES.push([MASK_RE, '~']);
+  MASK_GENERIC = true;
 }
 const maskPath = s => {
   const v = String(s==null?'':s);
@@ -1861,7 +1877,7 @@ function applyPayload(d){
   // browser ingestion has no root path of its own, so fall back to the first
   // working directory seen in the records to learn what needs masking
   const first = S.find(s => s.cwd) || S.find(s => s.file) || null;
-  buildMask(DATA.root || (first ? (first.cwd || first.file) : ''));
+  ensureMask(DATA.root || (first ? (first.cwd || first.file) : ''));
   applyPrivacy();
   renderAll();
 }
@@ -2876,8 +2892,14 @@ async function ingestOneFile(state, f, index){
        && state.cachedBytes + txt.length <= CACHE_MAX_BYTES){
       PARSE_CACHE.set(s, cache); state.cachedBytes += txt.length;
     }
-    if(!state.maskReady && s.cwd){ buildMask(s.cwd); state.maskReady = true; S.forEach(maskSession); }
-    if(state.maskReady) maskSession(s);
+    // keep trying later sessions until a home path reveals the account name;
+    // ensureMask always leaves a rule in place, so masking is never disabled
+    if(s.cwd && !state.maskReady){
+      ensureMask(s.cwd);
+      state.maskReady = !!MASK_USER;
+      if(state.maskReady) S.forEach(maskSession);
+    }
+    maskSession(s);
     S.push(s);
   } catch(e){
     state.failed++;
@@ -3147,6 +3169,9 @@ async function parseMoreEvents(btn){
     keys(e).forEach(k=>seen.add(k));
     s.events.push(e); added++;
   }
+  // rawMatch caches only by (session, query); the event stream just grew, so
+  // its previous hit/miss answers are stale
+  RAW_SEARCH_CACHE.delete(s);
   s.events.sort((a,b)=>a.t-b.t || (a.seq||0)-(b.seq||0));
   if(d.records) s.records = Math.max(s.records||0, d.records);
   if(usedCache) s.rawChars = cache.rawChars;
@@ -3513,7 +3538,12 @@ function reportContext(scope){
 }
 
 const reportCell = value => String(value == null ? '' : value);
-const csvCell = value => '"' + reportCell(value).split('"').join('""') + '"';
+const csvCell = value => {
+  const text = reportCell(value);
+  // spreadsheet apps treat a leading =, +, - or @ as a formula
+  const safe = /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
+  return '"' + safe.split('"').join('""') + '"';
+};
 const mdCell = value => reportCell(value).split('|').join('¦').split(NL).join(' ');
 
 const REPORT_CSV_COLUMNS = [
