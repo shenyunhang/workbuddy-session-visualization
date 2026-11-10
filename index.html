@@ -502,7 +502,7 @@
  */
 
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794228550017};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794276023676};
 let S = DATA.sessions || [];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => { const d = new Date(ms); const p = n => String(n).padStart(2,'0');
@@ -1344,8 +1344,8 @@ let cur = null;              // session currently shown in the drawer
 let hiddenKinds = new Set(); // event kinds the reader filtered out
 let hiddenModels = new Set(); // models the reader filtered out of the timeline
 let expandedKeys = new Set(); // stable ids of expanded raw records in this session
-const EV_STEP = 100;         // events rendered per page, and records pulled per re-parse
-let evShown = EV_STEP, evCurId = null;
+const EV_STEP = 100;         // records pulled per legacy resume step (no render paging)
+let evShown = Infinity, evCurId = null;  // every parsed event is rendered, no paging
 let evHitIndex = 0;          // which matching event is the current jump target
 let evScrollPending = false; // scroll on an explicit jump, not on every keystroke
 /* Resuming a parse inserts records and re-sorts the events, so array indexes
@@ -1556,8 +1556,8 @@ function eventRest(s, evCount){
 }
 function drawerEventTitleText(s, q, matched, shown, kinds, evCount){
   return q
-    ? '事件流（匹配 '+matched+' 条，已显示 '+shown+' 条）'
-    : '事件流（已显示 '+shown+' / '+matched+' 条'
+    ? '事件流（匹配 '+matched+' 条，全部显示）'
+    : '事件流（共 '+matched+' 条'
       +(kinds.length?('，文件共 '+(s.records||evCount)+' 条记录'):'')+'）';
 }
 function drawerEventActionsHtml(s, matched, shown, evCount){
@@ -1587,21 +1587,16 @@ function drawerEventActionsHtml(s, matched, shown, evCount){
  * swaps real rows back in just before they enter the viewport. Sessions with
  * fewer than EV_WINDOW_MIN candidates render exactly as before.
  */
-const EV_WINDOW_MIN = 500;
+const EV_WINDOW_MIN = 2000;
 const EV_WINDOW_MARGIN = 700;
 const EV_WINDOW_INITIAL = 80;    // rows materialised during the initial render
 const EV_ROW_DEFAULT_H = 64;     // height of an unmeasured placeholder
-const EV_WINDOW_MIN_BYTES = 512; // average record size that pays for the observer
-/** Windowing only pays off when rows are expensive to render; tiny records
-    are cheaper to keep in the DOM than to observe. */
+/** Ordinary sessions render every row at once (700 rows cost ~180 ms). Only a
+    very long stream needs placeholders: 30k rows take ~7 s in one shot. */
 function eventWindowNeeded(s, matched){
-  if(matched <= EV_WINDOW_MIN || typeof IntersectionObserver === 'undefined') return false;
-  const all = (s && s.events) || [];
-  let bytes = 0;
-  for(const e of all) if(e) bytes += e.size || 0;
-  return bytes / Math.max(1, all.length) > EV_WINDOW_MIN_BYTES;
+  return matched > EV_WINDOW_MIN && typeof IntersectionObserver !== 'undefined';
 }
-let evWindowCandidates = null, evWindowQ = '', evWindowObserver = null;
+let evWindowCandidates = null, evWindowQ = '', evWindowObserver = null, evWindowOwner = null;
 
 function setupEventWindowing(){
   if(evWindowObserver){ evWindowObserver.disconnect(); evWindowObserver = null; }
@@ -1610,6 +1605,8 @@ function setupEventWindowing(){
      || typeof IntersectionObserver === 'undefined') return;
   evWindowCandidates = drawerEventCandidates(cur, eventQuery());
   evWindowQ = eventQuery();
+  evWindowOwner = cur;
+  const owner = evWindowOwner;
   const slots = list.querySelectorAll('.ev-slot');
   if(!slots.length) return;
   // a search jump may target a row far outside the viewport; keep it real so
@@ -1624,6 +1621,9 @@ function setupEventWindowing(){
     }
   }
   evWindowObserver = new IntersectionObserver(entries=>{
+    // callbacks queued before a session switch must not fill the new session's
+    // slots with the old session's rows
+    if(cur !== owner) return;
     for(const entry of entries){
       const el = entry.target;
       const idx = Number(el.dataset && el.dataset.idx);
@@ -1773,7 +1773,7 @@ function openDrawer(id){
   // switching sessions is the only thing that should clear the reader's view
   if(cur !== s){
     expandedKeys.clear(); hiddenKinds.clear(); hiddenModels.clear();
-    evShown = EV_STEP; evHitIndex = 0;
+    evShown = Infinity; evHitIndex = 0;
     if($('ev-q')) $('ev-q').value = '';
   }
   cur = s; evCurId = id;
@@ -1954,6 +1954,15 @@ function learnMaskFromSessions(root, sessions){
 /* ---------- local file loading: read data.json straight from disk, no server ---------- */
 function applyPayload(d){
   S = d.sessions || [];
+  // snapshots can carry duplicate ids too; keep every row addressable
+  const seenIds = new Set();
+  for(const s of S){
+    if(!s) continue;
+    const base = String(s.id || 'session');
+    let id = base, suffix = 2;
+    while(seenIds.has(id)) id = base + '-' + (suffix++);
+    s.id = id; seenIds.add(id);
+  }
   if(d.product && (d.product.ok || (d.product.prompts||[]).length)) P = d.product;
   DATA.generatedAt = d.generatedAt || 0;
   DATA.root = d.root || '';
@@ -2992,7 +3001,12 @@ async function ingestOneFile(state, f, index){
     return;
   }
   try {
-    const name = String(f.name || '').replace(/\.jsonl$/i, '');
+    // Two workspaces can hold files with the same name. Row keys, timeline
+    // bars and openDrawer() all resolve a session by id, so a duplicate would
+    // open the wrong conversation and make two chats appear to bleed into one.
+    const baseName = String(f.name || '').replace(/\.jsonl$/i, '');
+    let name = baseName, suffix = 2;
+    while(S.some(x => x && x.id === name)) name = baseName + '-' + (suffix++);
     const cache = {};
     const s = await jsParseAsync(txt, name, fileLabel(f), f.size || txt.length, state.budget,
       FULL_SESSION_PARSE_OPTIONS,
@@ -3209,7 +3223,7 @@ function closeDrawer(){
 $('d-close').onclick = closeDrawer;
 /* the event-stream search field is static, so a repaint cannot steal its focus */
 function refreshEventSearch(){
-  evShown = EV_STEP;
+  evShown = Infinity;
   evHitIndex = 0;
   if(cur) openDrawer(cur.id);
 }
