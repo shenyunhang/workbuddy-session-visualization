@@ -522,7 +522,7 @@
 /** @typedef {Object} ProductConfig configuration snapshot shown on the prompts tab */
 
 /* ---------- shared state, formatting and thresholds ---------- */
-const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794811856863};
+const DATA = {"root":"","deploy":true,"source":{"dbOk":false,"dbError":null,"indexedSessions":0,"workspaces":0,"jsonlFiles":0,"scanned":0},"sessions":[],"product":{"ok":false,"error":"部署版不含本地数据，请在页面顶部选中 ~/.workbuddy 目录","meta":{},"agents":[],"tools":[],"prompts":[],"subagents":[],"outputStyles":[],"models":[]},"generatedAt":1794813334934};
 let sessionList = DATA.sessions || [];
 let productSnapshot = DATA.product || {};
 /* The persisted namespace dates from the prototype. Its value is part of the
@@ -673,8 +673,8 @@ const COMPACT_TRIGGER_LABEL = {blocking_limit:'上下文触顶',
   emergency_threshold:'紧急阈值', model_switch:'模型切换'};
 const compactTypeText = compactType => COMPACT_TYPE_LABEL[compactType] || compactType;
 /* Rare but important records. `ax` is an independent marker on an event, so
-   highlighting never changes the kind used for turn/tool statistics, and each
-   of these rows bypasses the 210-record cap. */
+   highlighting never changes the kind used for turn/tool statistics. These
+   rows are kept even when an old snapshot hits its legacy first-pass cap. */
 const ATTENTION_STYLE = {
   compact:    {label:'上下文压缩',    badge:'压缩',     color:CHART_PALETTE.pink},
   reqerror:   {label:'请求失败 / 中断', badge:'请求异常', color:CHART_PALETTE.red},
